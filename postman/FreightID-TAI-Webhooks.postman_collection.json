@@ -1,0 +1,604 @@
+{
+  "info": {
+    "_postman_id": "b2f4c1a7-5d6e-4a1b-9c3f-freightid-tai-001",
+    "name": "FreightID ← TAI Inbound Webhooks",
+    "description": "Simulates TAI's inbound webhook deliveries for use cases 1 and 2.\n\n**Setup**\n1. Start the app: `npm run dev`\n2. Fill in the credential variables to match your `.env`. Set EITHER:\n   - `taiBasicUser` + `taiBasicPassword` (mirrors `TAI_WEBHOOK_BASIC_USER` / `_PASSWORD`), or\n   - `taiWebhookAuth` (mirrors `TAI_WEBHOOK_AUTH_TOKEN` — the whole string, `Bearer ` included).\n\n**Basic wins when both are set** — findings §3, and the server applies the same precedence. So if Basic vars are present in `.env`, a static Bearer token is ignored and comes back 401. The collection's pre-request script resolves the header the same way, keeping the two in sync.\n\n**What to expect**\nEvery request returns 200 except the deliberate 401. That is by design: TAI never re-sends a delivery, so rejecting a bad payload would destroy the event. Failures are recorded in the `webhook_events` table instead — check `processing_status` and `error` there.\n\nInspect results with `npm run db:studio`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "taiWebhookAuth",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "taiBasicUser",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "taiBasicPassword",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Resolves the Authorization header the way the server does:",
+          "// Basic wins when both schemes are configured (findings §3).",
+          "const user = pm.collectionVariables.get('taiBasicUser');",
+          "const password = pm.collectionVariables.get('taiBasicPassword');",
+          "",
+          "if (user && password) {",
+          "    const CryptoJS = require('crypto-js');",
+          "    const encoded = CryptoJS.enc.Base64.stringify(",
+          "        CryptoJS.enc.Utf8.parse(user + ':' + password)",
+          "    );",
+          "    pm.variables.set('resolvedAuth', 'Basic ' + encoded);",
+          "} else {",
+          "    pm.variables.set('resolvedAuth', pm.collectionVariables.get('taiWebhookAuth') || '');",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Use case 1 — Shipment created",
+      "item": [
+        {
+          "name": "Shipment created (full, multi-stop)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"processed is true\", function () {",
+                  "    pm.expect(pm.response.json().processed).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{resolvedAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shipmentId\": 901455,\n  \"shipmentType\": \"LTL\",\n  \"serviceLevel\": \"Standard\",\n  \"shipmentStatus\": \"Committed\",\n  \"mileage\": 512.4,\n  \"proNumber\": \"PRO-901455\",\n  \"bolNumber\": \"BOL-55120\",\n  \"poNumber\": \"PO-2026-4417\",\n  \"shipperReference\": \"REF-ACME-8890\",\n  \"load\": {\n    \"description\": \"Palletized electronics, non-stackable\",\n    \"quantity\": 6,\n    \"pieces\": 48,\n    \"weight\": 8450.75,\n    \"hazmat\": false,\n    \"dimensions\": {\n      \"length\": 48,\n      \"width\": 40,\n      \"height\": 60,\n      \"units\": \"in\"\n    }\n  },\n  \"carrier\": {\n    \"name\": \"Blue Ridge Freight\",\n    \"mcNumber\": \"MC-778210\",\n    \"scac\": \"BRFL\",\n    \"phone\": \"+1-555-0134\"\n  },\n  \"driverCellPhoneNumber\": \"+1-555-0199\",\n  \"stops\": [\n    {\n      \"shipmentStopId\": 7701,\n      \"stopType\": \"Pickup\",\n      \"sequence\": 1,\n      \"companyName\": \"Acme Manufacturing\",\n      \"address1\": \"1200 Industrial Pkwy\",\n      \"address2\": \"Dock 14\",\n      \"city\": \"Columbus\",\n      \"state\": \"OH\",\n      \"postalCode\": \"43004\",\n      \"country\": \"US\",\n      \"earliestDateTime\": \"2026-09-08T13:00:00Z\",\n      \"latestDateTime\": \"2026-09-08T17:00:00Z\"\n    },\n    {\n      \"shipmentStopId\": 7702,\n      \"stopType\": \"Delivery\",\n      \"sequence\": 2,\n      \"companyName\": \"Nordic Distribution\",\n      \"address1\": \"88 Harbor Rd\",\n      \"city\": \"Newark\",\n      \"state\": \"NJ\",\n      \"postalCode\": \"07102\",\n      \"country\": \"US\",\n      \"appointmentDateTime\": \"2026-09-10T15:30:00Z\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/tai/shipment-create",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "tai",
+                "shipment-create"
+              ]
+            },
+            "description": "TAI `ShipmentCreateUrl`. Writes a shipment, two stops and a SHIPMENT_CREATED event. Run this first — the use case 2 requests update the same shipment (901455)."
+          }
+        },
+        {
+          "name": "Shipment created (pickup/receiver shape, hazmat)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"processed is true\", function () {",
+                  "    pm.expect(pm.response.json().processed).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{resolvedAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shipmentId\": 901456,\n  \"shipmentType\": \"FTL\",\n  \"serviceLevel\": \"Expedited\",\n  \"shipmentStatus\": \"Quote\",\n  \"mileage\": 1180,\n  \"proNumber\": \"PRO-901456\",\n  \"shipperReference\": \"REF-CHEMCO-221\",\n  \"load\": {\n    \"description\": \"Class 3 flammable liquids, UN1263\",\n    \"quantity\": 12,\n    \"pieces\": 240,\n    \"weight\": 31200.5,\n    \"hazmat\": true,\n    \"dimensions\": {\n      \"length\": 96,\n      \"width\": 48,\n      \"height\": 52,\n      \"units\": \"in\"\n    }\n  },\n  \"carrier\": {\n    \"name\": \"Sterling Bulk Lines\",\n    \"mcNumber\": \"MC-402118\",\n    \"scac\": \"STBL\",\n    \"phone\": \"+1-555-0177\"\n  },\n  \"pickup\": {\n    \"companyName\": \"ChemCo Terminals\",\n    \"address1\": \"4400 Refinery Row\",\n    \"city\": \"Houston\",\n    \"state\": \"TX\",\n    \"postalCode\": \"77015\",\n    \"country\": \"US\",\n    \"earliestDateTime\": \"2026-09-09T11:00:00Z\",\n    \"latestDateTime\": \"2026-09-09T19:00:00Z\"\n  },\n  \"receiver\": {\n    \"companyName\": \"Midwest Coatings\",\n    \"address1\": \"17 Foundry St\",\n    \"city\": \"Peoria\",\n    \"state\": \"IL\",\n    \"postalCode\": \"61602\",\n    \"country\": \"US\",\n    \"appointmentDateTime\": \"2026-09-12T14:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/tai/shipment-create",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "tai",
+                "shipment-create"
+              ]
+            },
+            "description": "Same endpoint, but the body uses the `pickup` / `receiver` shape from findings §7 instead of a `stops[]` array. The normalizer synthesizes the two stop rows. Creates shipment 901456."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Use case 2 — Shipment details updated",
+      "item": [
+        {
+          "name": "Detail updated (carrier + load + new stop)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"processed is true\", function () {",
+                  "    pm.expect(pm.response.json().processed).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{resolvedAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shipmentId\": 901455,\n  \"serviceLevel\": \"Expedited\",\n  \"carrier\": {\n    \"name\": \"Ironwood Carriers\",\n    \"mcNumber\": \"MC-559043\",\n    \"scac\": \"IRWD\",\n    \"phone\": \"+1-555-0142\"\n  },\n  \"load\": {\n    \"description\": \"Palletized electronics, non-stackable\",\n    \"quantity\": 7,\n    \"pieces\": 56,\n    \"weight\": 9120,\n    \"hazmat\": false\n  },\n  \"stops\": [\n    {\n      \"shipmentStopId\": 7703,\n      \"stopType\": \"Intermediate\",\n      \"sequence\": 3,\n      \"companyName\": \"Cross-dock East\",\n      \"address1\": \"9 Terminal Way\",\n      \"city\": \"Allentown\",\n      \"state\": \"PA\",\n      \"postalCode\": \"18101\",\n      \"country\": \"US\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/tai/shipment-detail-update",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "tai",
+                "shipment-detail-update"
+              ]
+            },
+            "description": "TAI `ShipmentDetailUpdateUrl`. Changes service level and carrier on 901455 and adds an intermediate stop. Fields absent from the body are left alone, not blanked."
+          }
+        },
+        {
+          "name": "Status updated → In Transit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"processed is true\", function () {",
+                  "    pm.expect(pm.response.json().processed).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{resolvedAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shipmentId\": 901455,\n  \"shipmentStatus\": \"In Transit\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/tai/shipment-status-update",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "tai",
+                "shipment-status-update"
+              ]
+            },
+            "description": "TAI `ShipmentStatusUpdateUrl`. Minimal body: only the id and the status. Confirms carrier, load and mileage from the create survive a narrow status update."
+          }
+        },
+        {
+          "name": "Status updated → Delivered",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"processed is true\", function () {",
+                  "    pm.expect(pm.response.json().processed).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{resolvedAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shipmentId\": 901455,\n  \"shipmentStatus\": \"Delivered\",\n  \"stops\": [\n    {\n      \"shipmentStopId\": 7702,\n      \"stopType\": \"Delivery\",\n      \"sequence\": 2,\n      \"appointmentDateTime\": \"2026-09-10T15:30:00Z\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/tai/shipment-status-update",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "tai",
+                "shipment-status-update"
+              ]
+            },
+            "description": "Moves 901455 to DELIVERED and touches the delivery stop."
+          }
+        },
+        {
+          "name": "Status updated → Booked (Version 2 label)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"processed is true\", function () {",
+                  "    pm.expect(pm.response.json().processed).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{resolvedAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shipmentId\": 901456,\n  \"shipmentStatus\": \"Booked\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/tai/shipment-status-update",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "tai",
+                "shipment-status-update"
+              ]
+            },
+            "description": "TAI's `Version` setting is still unconfirmed (findings §9). v2 sends `Booked` where v3 sends `Committed`. Both map to COMMITTED; the raw label is kept in `tai_status_label`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Failure modes",
+      "item": [
+        {
+          "name": "Missing credential → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 401\", function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shipmentId\": 901455,\n  \"shipmentType\": \"LTL\",\n  \"serviceLevel\": \"Standard\",\n  \"shipmentStatus\": \"Committed\",\n  \"mileage\": 512.4,\n  \"proNumber\": \"PRO-901455\",\n  \"bolNumber\": \"BOL-55120\",\n  \"poNumber\": \"PO-2026-4417\",\n  \"shipperReference\": \"REF-ACME-8890\",\n  \"load\": {\n    \"description\": \"Palletized electronics, non-stackable\",\n    \"quantity\": 6,\n    \"pieces\": 48,\n    \"weight\": 8450.75,\n    \"hazmat\": false,\n    \"dimensions\": {\n      \"length\": 48,\n      \"width\": 40,\n      \"height\": 60,\n      \"units\": \"in\"\n    }\n  },\n  \"carrier\": {\n    \"name\": \"Blue Ridge Freight\",\n    \"mcNumber\": \"MC-778210\",\n    \"scac\": \"BRFL\",\n    \"phone\": \"+1-555-0134\"\n  },\n  \"driverCellPhoneNumber\": \"+1-555-0199\",\n  \"stops\": [\n    {\n      \"shipmentStopId\": 7701,\n      \"stopType\": \"Pickup\",\n      \"sequence\": 1,\n      \"companyName\": \"Acme Manufacturing\",\n      \"address1\": \"1200 Industrial Pkwy\",\n      \"address2\": \"Dock 14\",\n      \"city\": \"Columbus\",\n      \"state\": \"OH\",\n      \"postalCode\": \"43004\",\n      \"country\": \"US\",\n      \"earliestDateTime\": \"2026-09-08T13:00:00Z\",\n      \"latestDateTime\": \"2026-09-08T17:00:00Z\"\n    },\n    {\n      \"shipmentStopId\": 7702,\n      \"stopType\": \"Delivery\",\n      \"sequence\": 2,\n      \"companyName\": \"Nordic Distribution\",\n      \"address1\": \"88 Harbor Rd\",\n      \"city\": \"Newark\",\n      \"state\": \"NJ\",\n      \"postalCode\": \"07102\",\n      \"country\": \"US\",\n      \"appointmentDateTime\": \"2026-09-10T15:30:00Z\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/tai/shipment-create",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "tai",
+                "shipment-create"
+              ]
+            },
+            "description": "The one case that is deliberately not 200. Findings §3 asks for 401 so a wrong secret is caught during testing. The rejection is still logged in `webhook_events`."
+          }
+        },
+        {
+          "name": "Unmapped status → 200, FAILED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"processed is true\", function () {",
+                  "    pm.expect(pm.response.json().processed).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{resolvedAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shipmentId\": 901457,\n  \"shipmentStatus\": \"Teleported\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/tai/shipment-status-update",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "tai",
+                "shipment-status-update"
+              ]
+            },
+            "description": "`processed: true` only means the job was scheduled. The status label maps to nothing, so processing fails and no shipment is written — check `webhook_events.error`. This is the tripwire for a Version 2/3 mismatch."
+          }
+        },
+        {
+          "name": "No shipment id → 200, FAILED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"processed is true\", function () {",
+                  "    pm.expect(pm.response.json().processed).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{resolvedAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shipmentStatus\": \"In Transit\",\n  \"proNumber\": \"PRO-ORPHAN-1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/tai/shipment-status-update",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "tai",
+                "shipment-status-update"
+              ]
+            },
+            "description": "Nothing to match or create against. Raw payload is retained in `webhook_events` for replay."
+          }
+        },
+        {
+          "name": "Malformed JSON → 200, SKIPPED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"processed is false\", function () {",
+                  "    pm.expect(pm.response.json().processed).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{resolvedAuth}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"shipmentId\": 901455, \"shipmentStatus\": ",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/tai/shipment-detail-update",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "tai",
+                "shipment-detail-update"
+              ]
+            },
+            "description": "Truncated body. Still acked 200 and still stored — TAI would never re-send it, so a rejection would lose the event outright. The bytes land in `raw_payload._unparsed`."
+          }
+        }
+      ]
+    }
+  ]
+}

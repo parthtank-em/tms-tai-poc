@@ -1,0 +1,172 @@
+{
+  "_readme": "Dummy TAI webhook bodies for manual testing. Paste one into Postman's raw JSON body. Field names are best-guess aliases — the findings doc specifies the transport, not the body schema. See src/lib/tai/payload.ts.",
+  "_routes": {
+    "shipmentCreated*": "POST /api/webhooks/tai/shipment-create",
+    "shipmentDetailUpdated": "POST /api/webhooks/tai/shipment-detail-update",
+    "shipmentStatus*": "POST /api/webhooks/tai/shipment-status-update"
+  },
+  "shipmentCreatedFull": {
+    "shipmentId": 901455,
+    "shipmentType": "LTL",
+    "serviceLevel": "Standard",
+    "shipmentStatus": "Committed",
+    "mileage": 512.4,
+    "proNumber": "PRO-901455",
+    "bolNumber": "BOL-55120",
+    "poNumber": "PO-2026-4417",
+    "shipperReference": "REF-ACME-8890",
+    "load": {
+      "description": "Palletized electronics, non-stackable",
+      "quantity": 6,
+      "pieces": 48,
+      "weight": 8450.75,
+      "hazmat": false,
+      "dimensions": {
+        "length": 48,
+        "width": 40,
+        "height": 60,
+        "units": "in"
+      }
+    },
+    "carrier": {
+      "name": "Blue Ridge Freight",
+      "mcNumber": "MC-778210",
+      "scac": "BRFL",
+      "phone": "+1-555-0134"
+    },
+    "driverCellPhoneNumber": "+1-555-0199",
+    "stops": [
+      {
+        "shipmentStopId": 7701,
+        "stopType": "Pickup",
+        "sequence": 1,
+        "companyName": "Acme Manufacturing",
+        "address1": "1200 Industrial Pkwy",
+        "address2": "Dock 14",
+        "city": "Columbus",
+        "state": "OH",
+        "postalCode": "43004",
+        "country": "US",
+        "earliestDateTime": "2026-09-08T13:00:00Z",
+        "latestDateTime": "2026-09-08T17:00:00Z"
+      },
+      {
+        "shipmentStopId": 7702,
+        "stopType": "Delivery",
+        "sequence": 2,
+        "companyName": "Nordic Distribution",
+        "address1": "88 Harbor Rd",
+        "city": "Newark",
+        "state": "NJ",
+        "postalCode": "07102",
+        "country": "US",
+        "appointmentDateTime": "2026-09-10T15:30:00Z"
+      }
+    ]
+  },
+  "shipmentCreatedPickupReceiverShape": {
+    "shipmentId": 901456,
+    "shipmentType": "FTL",
+    "serviceLevel": "Expedited",
+    "shipmentStatus": "Quote",
+    "mileage": 1180,
+    "proNumber": "PRO-901456",
+    "shipperReference": "REF-CHEMCO-221",
+    "load": {
+      "description": "Class 3 flammable liquids, UN1263",
+      "quantity": 12,
+      "pieces": 240,
+      "weight": 31200.5,
+      "hazmat": true,
+      "dimensions": {
+        "length": 96,
+        "width": 48,
+        "height": 52,
+        "units": "in"
+      }
+    },
+    "carrier": {
+      "name": "Sterling Bulk Lines",
+      "mcNumber": "MC-402118",
+      "scac": "STBL",
+      "phone": "+1-555-0177"
+    },
+    "pickup": {
+      "companyName": "ChemCo Terminals",
+      "address1": "4400 Refinery Row",
+      "city": "Houston",
+      "state": "TX",
+      "postalCode": "77015",
+      "country": "US",
+      "earliestDateTime": "2026-09-09T11:00:00Z",
+      "latestDateTime": "2026-09-09T19:00:00Z"
+    },
+    "receiver": {
+      "companyName": "Midwest Coatings",
+      "address1": "17 Foundry St",
+      "city": "Peoria",
+      "state": "IL",
+      "postalCode": "61602",
+      "country": "US",
+      "appointmentDateTime": "2026-09-12T14:00:00Z"
+    }
+  },
+  "shipmentDetailUpdated": {
+    "shipmentId": 901455,
+    "serviceLevel": "Expedited",
+    "carrier": {
+      "name": "Ironwood Carriers",
+      "mcNumber": "MC-559043",
+      "scac": "IRWD",
+      "phone": "+1-555-0142"
+    },
+    "load": {
+      "description": "Palletized electronics, non-stackable",
+      "quantity": 7,
+      "pieces": 56,
+      "weight": 9120,
+      "hazmat": false
+    },
+    "stops": [
+      {
+        "shipmentStopId": 7703,
+        "stopType": "Intermediate",
+        "sequence": 3,
+        "companyName": "Cross-dock East",
+        "address1": "9 Terminal Way",
+        "city": "Allentown",
+        "state": "PA",
+        "postalCode": "18101",
+        "country": "US"
+      }
+    ]
+  },
+  "shipmentStatusInTransit": {
+    "shipmentId": 901455,
+    "shipmentStatus": "In Transit"
+  },
+  "shipmentStatusDelivered": {
+    "shipmentId": 901455,
+    "shipmentStatus": "Delivered",
+    "stops": [
+      {
+        "shipmentStopId": 7702,
+        "stopType": "Delivery",
+        "sequence": 2,
+        "appointmentDateTime": "2026-09-10T15:30:00Z"
+      }
+    ]
+  },
+  "shipmentStatusVersion2Booked": {
+    "shipmentId": 901456,
+    "shipmentStatus": "Booked"
+  },
+  "unmappedStatus": {
+    "shipmentId": 901457,
+    "shipmentStatus": "Teleported"
+  },
+  "missingShipmentId": {
+    "shipmentStatus": "In Transit",
+    "proNumber": "PRO-ORPHAN-1"
+  }
+}

@@ -1,0 +1,486 @@
+// FreightID data model.
+//
+// Derived from docs/FreightID_TAI_Integration_Findings.md (§7 core data model,
+// plus the entities the two integration paths in §3-§5 require).
+//
+// The datasource URL is supplied by ../prisma.config.ts (from DATABASE_URL).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// TAI's shipment-level `shipmentStatus` enum (§4.3), used by `PUT /Tracking`.
+///
+/// Note the webhook `Version` setting (§3): v2 sends `Booked` for `Committed`
+/// and `Quoted` for `Quote`. Both labels must map onto these values — which
+/// version is configured is still an open question (§9).
+enum ShipmentStatus {
+  QUOTE
+  COMMITTED
+  READY
+  SENT
+  DISPATCHED
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  COMPLETE
+  CANCELED
+}
+
+/// Stops are rows rather than pickup/receiver columns on Shipment because the
+/// stop-level TAI endpoint `PUT /Tracking/{shipmentStopId}` (§4.2) needs a
+/// per-stop TAI id to address.
+enum StopType {
+  PICKUP
+  DELIVERY
+  INTERMEDIATE
+}
+
+/// Which side produced an event — inbound webhook, a read back from TAI's REST
+/// API, or FreightID's own state machine.
+enum EventSource {
+  TAI_WEBHOOK
+  TAI_API
+  FREIGHTID_INTERNAL
+}
+
+/// FreightID's internal lifecycle events (use case 3) plus the inbound events
+/// mirrored from TAI (use cases 1-2) and alert activity (use case 4).
+enum ShipmentEventType {
+  SHIPMENT_CREATED
+  SHIPMENT_DETAILS_UPDATED
+  SHIPMENT_STATUS_UPDATED
+  DRIVER_ASSIGNED
+  DRIVER_IDENTITY_VERIFIED
+  ARRIVED_AT_PICKUP
+  PICKED_UP
+  IN_TRANSIT
+  ARRIVED_AT_DELIVERY
+  DELIVERED
+  POD_CAPTURED
+  LOCATION_UPDATED
+  SECURITY_ALERT_RAISED
+  SECURITY_ALERT_RESOLVED
+}
+
+/// Whether an event still needs to be pushed to TAI, and how that went.
+///
+/// DRIVER_ASSIGNED is expected to sit at HELD until §5 is answered: FreightID
+/// records the event locally but must not call TAI for it yet.
+enum TaiSyncStatus {
+  NOT_APPLICABLE
+  PENDING
+  SYNCED
+  FAILED
+  HELD
+}
+
+/// Driver identity checks (§9). License validity / MVR / CDLIS are in scope;
+/// address verification is still unconfirmed.
+enum DriverVerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+/// Which TAI webhook URL delivered an inbound payload (§3).
+enum WebhookType {
+  SHIPMENT_CREATE
+  SHIPMENT_DETAIL_UPDATE
+  SHIPMENT_STATUS_UPDATE
+  SHIPMENT_LOCATION_UPDATE
+  OTHER
+}
+
+/// Result of checking the static `Authorization` / Basic credential on an
+/// inbound webhook. TAI does not sign payloads, so this is the only check.
+enum WebhookAuthResult {
+  AUTHORIZED
+  UNAUTHORIZED
+  MALFORMED
+}
+
+/// Processing outcome for an inbound webhook. Deliveries are at-most-once with
+/// no retries (§3), so every payload is persisted on arrival, acked with 200,
+/// and processed asynchronously from here.
+enum WebhookProcessingStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+  SKIPPED
+}
+
+/// Direction of an outbound alert call: `POST /Alerts` or `POST /Alerts/Resolved`.
+enum AlertAction {
+  CREATE
+  RESOLVE
+}
+
+/// State of a queued outbound job. FreightID owns retry/backoff for outbound
+/// calls (§4.1) — a TAI outage must not silently drop an alert.
+enum OutboundJobStatus {
+  PENDING
+  IN_FLIGHT
+  SUCCEEDED
+  FAILED
+  DEAD_LETTER
+}
+
+// ---------------------------------------------------------------------------
+// Core shipment model
+// ---------------------------------------------------------------------------
+
+model Shipment {
+  id String @id @default(uuid())
+
+  /// TAI's integer shipment id — the key every outbound call is addressed by.
+  taiShipmentId  Int?           @unique @map("tai_shipment_id")
+  shipmentType   String?        @map("shipment_type")
+  serviceLevel   String?        @map("service_level")
+  status         ShipmentStatus
+  /// Raw status string as TAI sent it, kept so an unmapped or renamed label is
+  /// never lost to the enum mapping.
+  taiStatusLabel String?        @map("tai_status_label")
+  mileage        Decimal?       @db.Decimal(10, 2)
+
+  proNumber        String? @map("pro_number")
+  bolNumber        String? @map("bol_number")
+  poNumber         String? @map("po_number")
+  shipperReference String? @map("shipper_reference")
+
+  // Load detail (§7). One load per shipment; commodity-level detail is out of
+  // scope for use cases 1-4.
+  loadDescription String?  @map("load_description")
+  loadQuantity    Int?     @map("load_quantity")
+  loadPieces      Int?     @map("load_pieces")
+  loadWeightLb    Decimal? @map("load_weight_lb") @db.Decimal(10, 2)
+  loadHazmat      Boolean  @default(false) @map("load_hazmat")
+  /// Free-form dimensions (length/width/height/units as delivered by TAI).
+  loadDimensions  Json?    @map("load_dimensions")
+
+  // Carrier detail as delivered by TAI.
+  carrierName     String? @map("carrier_name")
+  carrierMcNumber String? @map("carrier_mc_number")
+  carrierScac     String? @map("carrier_scac")
+  carrierPhone    String? @map("carrier_phone")
+
+  // Driver assignment is local-only until §5 is resolved. TAI models drivers as
+  // shipment reference numbers, not an entity, so none of this is pushed yet.
+  driverId                 String?   @map("driver_id")
+  driver                   Driver?   @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  driverAssignedAt         DateTime? @map("driver_assigned_at")
+  driverIdentityVerifiedAt DateTime? @map("driver_identity_verified_at")
+  secondaryDriverName      String?   @map("secondary_driver_name")
+  secondaryDriverPhone     String?   @map("secondary_driver_phone")
+
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  /// When TAI last told us about this shipment — used by the reconciliation
+  /// poll that covers missed webhooks (§3).
+  taiLastSeenAt DateTime? @map("tai_last_seen_at")
+
+  stops         ShipmentStop[]
+  events        ShipmentEvent[]
+  alerts        ShipmentAlert[]
+  outboundJobs  OutboundJob[]
+  webhookEvents WebhookEvent[]
+  locations     ShipmentLocation[]
+  apiCalls      TaiApiCall[]
+
+  @@index([status])
+  @@index([updatedAt])
+  @@index([driverId])
+  @@map("shipments")
+}
+
+model ShipmentStop {
+  id         String   @id @default(uuid())
+  shipmentId String   @map("shipment_id")
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  /// TAI's `shipmentStopId`, required to address `PUT /Tracking/{shipmentStopId}`.
+  taiShipmentStopId Int?     @unique @map("tai_shipment_stop_id")
+  type              StopType
+  /// Stop ordering within the shipment (1-based).
+  sequence          Int
+
+  companyName String? @map("company_name")
+  address1    String?
+  address2    String?
+  city        String?
+  state       String?
+  postalCode  String? @map("postal_code")
+  country     String?
+
+  /// Appointment / delivery window as scheduled.
+  windowStart     DateTime? @map("window_start")
+  windowEnd       DateTime? @map("window_end")
+  appointmentTime DateTime? @map("appointment_time")
+
+  // Actuals pushed to TAI via `PUT /Tracking/{shipmentStopId}` (§4.2).
+  actualArrivalAt   DateTime? @map("actual_arrival_at")
+  actualDepartureAt DateTime? @map("actual_departure_at")
+  podSignedBy       String?   @map("pod_signed_by")
+  podArrivalAt      DateTime? @map("pod_arrival_at")
+  podDepartureAt    DateTime? @map("pod_departure_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  events ShipmentEvent[]
+  alerts ShipmentAlert[]
+
+  @@unique([shipmentId, sequence])
+  @@index([shipmentId, type])
+  @@map("shipment_stops")
+}
+
+/// Local-only driver record. Not synced to TAI (§5).
+model Driver {
+  id            String  @id @default(uuid())
+  name          String
+  phone         String?
+  email         String?
+  licenseNumber String? @map("license_number")
+  licenseState  String? @map("license_state")
+
+  verificationStatus DriverVerificationStatus @default(UNVERIFIED) @map("verification_status")
+  verifiedAt         DateTime?                @map("verified_at")
+  /// Raw identity-provider result (license validity, MVR, CDLIS — §9).
+  verificationDetail Json?                    @map("verification_detail")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  shipments Shipment[]
+
+  @@index([name])
+  @@map("drivers")
+}
+
+// ---------------------------------------------------------------------------
+// Audit trail
+// ---------------------------------------------------------------------------
+
+/// Append-only shipment audit trail (§7). Every lifecycle transition lands here
+/// first; outbound sync to TAI is driven off `taiSyncStatus`.
+model ShipmentEvent {
+  id         String   @id @default(uuid())
+  shipmentId String   @map("shipment_id")
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  /// Set when the event belongs to one specific stop rather than the shipment.
+  stopId String?       @map("stop_id")
+  stop   ShipmentStop? @relation(fields: [stopId], references: [id], onDelete: SetNull)
+
+  type       ShipmentEventType
+  source     EventSource
+  occurredAt DateTime          @map("occurred_at")
+  /// Event-specific detail (timestamps, status labels, POD signature, ...).
+  details    Json?
+
+  taiSyncStatus TaiSyncStatus @default(NOT_APPLICABLE) @map("tai_sync_status")
+  taiSyncedAt   DateTime?     @map("tai_synced_at")
+  taiSyncError  String?       @map("tai_sync_error")
+
+  /// The inbound delivery this event was derived from, when applicable.
+  webhookEventId String?       @map("webhook_event_id")
+  webhookEvent   WebhookEvent? @relation(fields: [webhookEventId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  apiCalls TaiApiCall[]
+
+  @@index([shipmentId, occurredAt])
+  @@index([type, occurredAt])
+  @@index([taiSyncStatus])
+  @@index([stopId])
+  @@index([webhookEventId])
+  @@map("shipment_events")
+}
+
+/// Local mirror of TAI alerts (§7). `taiAlertId` stays null until `POST /Alerts`
+/// comes back, so an alert raised during a TAI outage is still recorded.
+model ShipmentAlert {
+  id         String   @id @default(uuid())
+  shipmentId String   @map("shipment_id")
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  taiAlertId Int?    @unique @map("tai_alert_id")
+  /// TAI's alert-type string. Text rather than an enum because the accepted
+  /// values are undocumented and still an open question (§9).
+  alertType  String  @map("alert_type")
+  resolved   Boolean @default(false)
+
+  /// Stop TAI associated the alert with. `POST /Alerts` returns a
+  /// `shipmentStopId` it does not accept in the request (§9) — this records
+  /// whatever comes back.
+  stopId            String?       @map("stop_id")
+  stop              ShipmentStop? @relation(fields: [stopId], references: [id], onDelete: SetNull)
+  taiShipmentStopId Int?          @map("tai_shipment_stop_id")
+
+  /// `createdDate` as reported by TAI, distinct from our own `createdAt`.
+  taiCreatedAt DateTime? @map("tai_created_at")
+  resolvedAt   DateTime? @map("resolved_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  outboundJobs OutboundJob[]
+
+  @@index([shipmentId, resolved])
+  @@index([stopId])
+  @@map("shipment_alerts")
+}
+
+// ---------------------------------------------------------------------------
+// Inbound: TAI webhooks (§3)
+// ---------------------------------------------------------------------------
+
+/// FreightID's own inbound webhook log. TAI's `WebhookActivityLogs` are not
+/// visible to us and deliveries are never retried, so this table is the only
+/// record that a payload arrived.
+model WebhookEvent {
+  id     String      @id @default(uuid())
+  source String      @default("TAI")
+  type   WebhookType
+
+  /// Payload exactly as received, before any parsing.
+  rawPayload Json    @map("raw_payload")
+  /// Request headers, minus the credential.
+  headers    Json?
+  remoteIp   String? @map("remote_ip")
+
+  authResult       WebhookAuthResult       @map("auth_result")
+  processingStatus WebhookProcessingStatus @default(PENDING) @map("processing_status")
+  /// Status code we returned to TAI. Should be 200 even for a payload we cannot
+  /// parse — TAI never re-delivers, so rejecting loses the event outright.
+  responseStatus   Int?                    @map("response_status")
+
+  receivedAt   DateTime  @default(now()) @map("received_at")
+  processedAt  DateTime? @map("processed_at")
+  attemptCount Int       @default(0) @map("attempt_count")
+  error        String?
+
+  /// TAI's shipment id lifted out of the payload, recorded even when no local
+  /// shipment matched yet.
+  taiShipmentId Int?      @map("tai_shipment_id")
+  shipmentId    String?   @map("shipment_id")
+  shipment      Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+
+  events ShipmentEvent[]
+
+  @@index([processingStatus, receivedAt])
+  @@index([type, receivedAt])
+  @@index([taiShipmentId])
+  @@index([shipmentId])
+  @@map("webhook_events")
+}
+
+/// Optional GPS/location history from `ShipmentLocationUpdateUrl` (§3), which
+/// TAI throttles to one ping per 15 minutes.
+model ShipmentLocation {
+  id         String   @id @default(uuid())
+  shipmentId String   @map("shipment_id")
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  latitude   Decimal     @db.Decimal(9, 6)
+  longitude  Decimal     @db.Decimal(9, 6)
+  city       String?
+  state      String?
+  recordedAt DateTime    @map("recorded_at")
+  source     EventSource @default(TAI_WEBHOOK)
+  createdAt  DateTime    @default(now()) @map("created_at")
+
+  @@index([shipmentId, recordedAt])
+  @@map("shipment_locations")
+}
+
+// ---------------------------------------------------------------------------
+// Outbound: TAI Public REST API (§4)
+// ---------------------------------------------------------------------------
+
+/// Reliability queue for the outbound calls FreightID owns (§4.1): alert
+/// create/resolve, tracking updates, activity logs. Nothing is pushed to TAI
+/// except through a row here, so a TAI outage delays rather than drops.
+model OutboundJob {
+  id         String    @id @default(uuid())
+  shipmentId String?   @map("shipment_id")
+  shipment   Shipment? @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  /// Which outbound operation this job performs, e.g. `ALERTS_CREATE`,
+  /// `TRACKING_UPDATE`, `STOP_TRACKING_UPDATE`, `ACTIVITY_LOG_CREATE`.
+  operation   String
+  /// For alert jobs: create or resolve. Null for other operations.
+  alertAction AlertAction? @map("alert_action")
+  /// `shipmentAlerts` payload for the Alerts endpoints — TAI accepts a list.
+  alertTypes  String[]     @map("alert_types")
+
+  alertId String?        @map("alert_id")
+  alert   ShipmentAlert? @relation(fields: [alertId], references: [id], onDelete: SetNull)
+
+  /// Request body to send, built when the job is enqueued.
+  payload Json
+
+  status        OutboundJobStatus @default(PENDING)
+  attemptCount  Int               @default(0) @map("attempt_count")
+  maxAttempts   Int               @default(8) @map("max_attempts")
+  /// Retry-with-backoff schedule; the worker claims rows due at or before now.
+  nextAttemptAt DateTime          @default(now()) @map("next_attempt_at")
+  lockedAt      DateTime?         @map("locked_at")
+  lockedBy      String?           @map("locked_by")
+  lastError     String?           @map("last_error")
+  completedAt   DateTime?         @map("completed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  apiCalls TaiApiCall[]
+
+  @@index([status, nextAttemptAt])
+  @@index([shipmentId, status])
+  @@index([alertId])
+  @@map("outbound_jobs")
+}
+
+/// Audit log of every call FreightID makes to TAI's Public API (§4.1), one row
+/// per attempt.
+model TaiApiCall {
+  id       String @id @default(uuid())
+  endpoint String
+  method   String
+
+  requestBody    Json?   @map("request_body")
+  responseStatus Int?    @map("response_status")
+  responseBody   Json?   @map("response_body")
+  error          String?
+  attempt        Int     @default(1)
+  durationMs     Int?    @map("duration_ms")
+
+  jobId String?      @map("job_id")
+  job   OutboundJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  shipmentId String?   @map("shipment_id")
+  shipment   Shipment? @relation(fields: [shipmentId], references: [id], onDelete: SetNull)
+
+  eventId String?        @map("event_id")
+  event   ShipmentEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([endpoint, createdAt])
+  @@index([shipmentId, createdAt])
+  @@index([jobId])
+  @@index([eventId])
+  @@map("tai_api_calls")
+}

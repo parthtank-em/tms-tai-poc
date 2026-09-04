@@ -39,8 +39,12 @@ prisma/
   schema.prisma                    # 9 models, 11 enums
   migrations/20260904050524_init/  # applied
 src/
+  proxy.ts                         # Next 16 middleware — optimistic auth gate
   app/                             # App Router
-    layout.tsx  page.tsx  globals.css
+    layout.tsx  globals.css
+    page.tsx                       # redirects to /shipments
+    login/                         # /login — single-credential sign-in
+    shipments/                     # /shipments + /shipments/[id] (auth required)
     api/webhooks/tai/              # inbound from TAI — use cases 1 & 2
       shipment-create/route.ts         # ShipmentCreateUrl
       shipment-detail-update/route.ts  # ShipmentDetailUpdateUrl
@@ -50,6 +54,10 @@ src/
   lib/
     prisma.ts                      # PrismaClient singleton (Neon adapter)
     utils.ts                       # cn()
+    auth/
+      credentials.ts               # operator credential check
+      session.ts                   # signed session cookie
+      guard.ts                     # getSession / requireSession
     tai/
       auth.ts                      # Authorization header check (Basic wins)
       status.ts                    # TAI status/stop labels -> enums
@@ -152,7 +160,38 @@ under `@theme inline`, with `oklch()` colour variables on `:root` and a `.dark` 
 
 ---
 
-## 6. Domain context
+## 6. Admin UI auth
+
+One operator credential, no user table, no sign-up.
+
+| Piece | Where |
+|---|---|
+| Credential check | `src/lib/auth/credentials.ts` — constant-time compare against `TAI_WEBHOOK_BASIC_USER` / `_PASSWORD` |
+| Session | `src/lib/auth/session.ts` — HMAC-SHA256 signed cookie, `HttpOnly`, `SameSite=Lax`, 8h, `Secure` in production |
+| Guards | `src/proxy.ts` (redirect) **and** `src/app/shipments/layout.tsx` (`requireSession`) |
+| Login / logout | `src/app/login/` — Server Actions |
+
+**`proxy.ts` must live in `src/`**, not the repo root, because this project has a `src/` directory —
+it belongs next to `app/`. At the root it is silently ignored: no error, no warning, the matcher just
+never runs.
+
+The cookie is **signed, not encrypted** — readable by whoever holds it, so it carries only a username
+and expiry. `AUTH_SESSION_SECRET` signs it; without that variable the code throws rather than
+accepting unsigned cookies.
+
+Both guards exist on purpose. The proxy is an optimistic redirect that runs outside the render on
+every matched request including prefetches, so it reads the cookie and nothing else. The layout check
+is the real boundary — it sits next to the Prisma queries, so no page in the segment can load data if
+the matcher is ever changed.
+
+Known shortcuts, all fine for a POC and all worth undoing before real exposure: the UI login reuses
+the TAI webhook Basic credential, there is no rate limiting on failed attempts, and the session
+cannot be revoked server-side before it expires (rotating `AUTH_SESSION_SECRET` is the blunt
+instrument).
+
+---
+
+## 7. Domain context
 
 The data model exists to serve four use cases from `docs/FreightID_TAI_Integration_Findings.md`:
 
@@ -171,7 +210,7 @@ section numbers.
 
 ---
 
-## 7. Known gaps
+## 8. Known gaps
 
 - **`DIRECT_URL` is not set in `.env`.** The init migration ran over the pooled host and succeeded, but
   concurrent-migration safety isn't guaranteed there. Add Neon's unpooled connection string (same host
@@ -187,11 +226,11 @@ section numbers.
   against a real TAI capture and prune.
 - **Use cases 3 and 4 are not built** — no outbound TAI REST client, no `OutboundJob` worker, no alert
   service. `ShipmentLocationUpdateUrl` (optional, §3) has no route either.
-- **No UI** beyond a shadcn button smoke test on `/`.
+- **Auth is single-credential and unthrottled** — see §6.
 
 ---
 
-## 8. Version tripwires
+## 9. Version tripwires
 
 - `prisma` (CLI) and `@prisma/client` must move **together**. The repo was briefly on CLI `8.0.0-rc.12` with
   client `7.10.0`; those don't pair — v8 is the contract-based "Prisma Next" platform CLI with no

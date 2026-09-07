@@ -91,6 +91,9 @@ export type NormalizedStop = {
   windowStart: Date | null;
   windowEnd: Date | null;
   appointmentTime: Date | null;
+  appointmentEnd: Date | null;
+  actualArrivalAt: Date | null;
+  actualDepartureAt: Date | null;
 };
 
 export type NormalizedShipment = {
@@ -103,6 +106,7 @@ export type NormalizedShipment = {
   bolNumber: string | null;
   poNumber: string | null;
   shipperReference: string | null;
+  customerName: string | null;
   loadDescription: string | null;
   loadQuantity: number | null;
   loadPieces: number | null;
@@ -118,7 +122,11 @@ export type NormalizedShipment = {
   stops: NormalizedStop[];
 };
 
-function normalizeStop(raw: unknown, fallbackSequence: number, fallbackType?: StopType): NormalizedStop | null {
+function normalizeStop(
+  raw: unknown,
+  fallbackSequence: number,
+  fallbackType?: StopType,
+): NormalizedStop | null {
   const stop = asRecord(raw);
   if (!stop) return null;
 
@@ -129,17 +137,28 @@ function normalizeStop(raw: unknown, fallbackSequence: number, fallbackType?: St
     type: fallbackType ?? mapStopType(str(pick(stop, "stopType", "type", "kind"))),
     sequence: int(pick(stop, "sequence", "stopSequence", "order", "sequenceNumber")) ?? fallbackSequence,
     companyName: str(pick(stop, "companyName", "company", "name", "locationName")),
-    address1: str(pick(address, "address1", "addressLine1", "street1", "address", "street")),
-    address2: str(pick(address, "address2", "addressLine2", "street2")),
+    address1: str(pick(address, "streetAddress", "address1", "addressLine1", "street1", "street")),
+    address2: str(pick(address, "streetAddressTwo", "address2", "addressLine2", "street2")),
     city: str(pick(address, "city")),
     state: str(pick(address, "state", "stateProvince", "province")),
     postalCode: str(pick(address, "postalCode", "zip", "zipCode", "postCode")),
     country: str(pick(address, "country", "countryCode")),
+    // TAI's own names come first (`PublicAPIShippingAddress`); the rest are
+    // fallbacks for payload shapes we have not seen.
     windowStart: date(
-      pick(stop, "windowStart", "earliestDateTime", "earliestDate", "scheduledEarliest", "openTime"),
+      pick(stop, "estimatedReadyDateTime", "windowStart", "earliestDateTime", "openTime"),
     ),
-    windowEnd: date(pick(stop, "windowEnd", "latestDateTime", "latestDate", "scheduledLatest", "closeTime")),
-    appointmentTime: date(pick(stop, "appointmentTime", "appointmentDateTime", "appointment")),
+    windowEnd: date(
+      pick(stop, "estimatedCloseDateTime", "windowEnd", "latestDateTime", "closeTime"),
+    ),
+    appointmentTime: date(
+      pick(stop, "appointmentReadyDateTime", "appointmentTime", "appointmentDateTime"),
+    ),
+    appointmentEnd: date(pick(stop, "appointmentCloseDateTime")),
+    // Actuals TAI already knows about. Previously dropped entirely, so a
+    // shipment that had already been picked up looked untouched.
+    actualArrivalAt: date(pick(stop, "actualArrivalDateTime", "actualArrival")),
+    actualDepartureAt: date(pick(stop, "actualDepartureDateTime", "actualDeparture")),
   };
 }
 
@@ -177,7 +196,16 @@ export function normalizeShipmentPayload(raw: unknown): NormalizedShipment | nul
   const body = asRecord(pick(outer, "shipment", "shipmentDetails", "data", "payload")) ?? outer;
 
   const load = asRecord(pick(body, "load", "loadDetails", "loadInfo"));
-  const carrier = asRecord(pick(body, "carrier", "carrierInfo", "carrierDetails"));
+
+  // TAI sends `carrier: null` and puts the real thing in `carrierList[0]`
+  // (`CarrierDetails`). Reading only `carrier` left carrier_name empty on
+  // every real shipment.
+  const carrierList = pick(body, "carrierList");
+  const carrier =
+    asRecord(pick(body, "carrier", "carrierInfo", "carrierDetails")) ??
+    (Array.isArray(carrierList) ? asRecord(carrierList[0]) : null);
+
+  const customer = asRecord(pick(body, "customer"));
 
   return {
     taiShipmentId: int(pick(body, "shipmentId", "taiShipmentId", "id")),
@@ -191,6 +219,7 @@ export function normalizeShipmentPayload(raw: unknown): NormalizedShipment | nul
     shipperReference: str(
       pick(body, "shipperReference", "shipperReferenceNumber", "customerReference", "refNumber"),
     ),
+    customerName: str(pick(customer, "name") ?? pick(body, "customerName")),
     loadDescription: str(pick(load, "description", "commodity", "commodityDescription") ?? pick(body, "loadDescription", "commodity")),
     loadQuantity: int(pick(load, "quantity", "qty") ?? pick(body, "loadQuantity", "quantity")),
     loadPieces: int(pick(load, "pieces", "pieceCount") ?? pick(body, "loadPieces", "pieces")),
@@ -200,7 +229,7 @@ export function normalizeShipmentPayload(raw: unknown): NormalizedShipment | nul
     carrierName: str(pick(carrier, "name", "carrierName") ?? pick(body, "carrierName")),
     carrierMcNumber: str(pick(carrier, "mcNumber", "mc") ?? pick(body, "carrierMcNumber", "mcNumber")),
     carrierScac: str(pick(carrier, "scac") ?? pick(body, "carrierScac", "scac")),
-    carrierPhone: str(pick(carrier, "phone", "phoneNumber") ?? pick(body, "carrierPhone")),
+    carrierPhone: str(pick(carrier, "phoneNumber", "phone") ?? pick(body, "carrierPhone")),
     // §4.3: TAI carries drivers as shipment reference numbers, and
     // `PublicAPIShipmentDetails` exposes `driverCellPhoneNumber` at the top
     // level. Only the secondary-driver columns are written from inbound data —

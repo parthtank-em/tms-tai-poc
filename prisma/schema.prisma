@@ -165,6 +165,10 @@ model Shipment {
   poNumber         String? @map("po_number")
   shipperReference String? @map("shipper_reference")
 
+  /// `PublicAPIShipmentDetails.customer.name` — the shipper this load belongs
+  /// to. Read-only from TAI; FreightID never writes it back.
+  customerName     String? @map("customer_name")
+
   // Load detail (§7). One load per shipment; commodity-level detail is out of
   // scope for use cases 1-4.
   loadDescription String?  @map("load_description")

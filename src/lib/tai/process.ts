@@ -50,6 +50,7 @@ function shipmentFields(normalized: NormalizedShipment) {
     bolNumber: normalized.bolNumber,
     poNumber: normalized.poNumber,
     shipperReference: normalized.shipperReference,
+    customerName: normalized.customerName,
     loadDescription: normalized.loadDescription,
     loadQuantity: normalized.loadQuantity,
     loadPieces: normalized.loadPieces,
@@ -82,6 +83,11 @@ function stopFields(stop: NormalizedStop) {
     windowStart: stop.windowStart,
     windowEnd: stop.windowEnd,
     appointmentTime: stop.appointmentTime,
+    // Actuals TAI already recorded. Written here so a shipment that moved
+    // before we saw it does not look untouched; `omitNullish` keeps a later
+    // payload without them from wiping what we have.
+    actualArrivalAt: stop.actualArrivalAt,
+    actualDepartureAt: stop.actualDepartureAt,
   };
 }
 

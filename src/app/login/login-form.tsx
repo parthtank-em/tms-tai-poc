@@ -18,47 +18,58 @@ export function LoginForm({ returnTo }: { returnTo: string }) {
   // attempt from making the operator retype both fields.
   const [username, setUsername] = useState("");
 
+  const invalid = state.error !== null;
+
   return (
-    <form action={formAction} className="space-y-4">
+    <form action={formAction} className="space-y-5">
       <input type="hidden" name="from" value={returnTo} />
 
-      <div className="space-y-2">
-        <Label htmlFor="username">Username</Label>
-        <Input
-          id="username"
-          name="username"
-          value={username}
-          onChange={(event) => setUsername(event.target.value)}
-          autoComplete="username"
-          required
-          autoFocus
-          disabled={pending}
-          aria-invalid={state.error ? true : undefined}
-          className="h-9"
-        />
+      <div className="space-y-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="username">Username</Label>
+          <Input
+            id="username"
+            name="username"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            autoComplete="username"
+            required
+            autoFocus
+            disabled={pending}
+            aria-invalid={invalid || undefined}
+            aria-describedby={invalid ? "login-error" : undefined}
+            className="h-9"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="password">Password</Label>
+          <Input
+            id="password"
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            disabled={pending}
+            aria-invalid={invalid || undefined}
+            aria-describedby={invalid ? "login-error" : undefined}
+            className="h-9"
+          />
+        </div>
       </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="password">Password</Label>
-        <Input
-          id="password"
-          name="password"
-          type="password"
-          autoComplete="current-password"
-          required
-          disabled={pending}
-          aria-invalid={state.error ? true : undefined}
-          className="h-9"
-        />
-      </div>
+      {/* Reserve the row whether or not it is filled, so the button does not
+          jump down when a failed attempt appears. */}
+      <p
+        id="login-error"
+        role="alert"
+        aria-live="polite"
+        className="min-h-4 text-xs text-destructive"
+      >
+        {state.error}
+      </p>
 
-      {state.error ? (
-        // aria-live so the failure is announced, not just shown.
-        <p role="alert" aria-live="polite" className="text-sm text-destructive">
-          {state.error}
-        </p>
-      ) : null}
-
+      {/* size="lg" is h-9 — the same height as the inputs above it. */}
       <Button type="submit" size="lg" disabled={pending} className="w-full">
         {pending ? "Signing in…" : "Sign in"}
       </Button>

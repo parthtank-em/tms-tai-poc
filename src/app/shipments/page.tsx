@@ -1,6 +1,8 @@
+import { EyeIcon } from "lucide-react";
 import Link from "next/link";
 
 import { ShipmentStatusBadge } from "@/components/status-badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -10,7 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDateTime, formatLocation, formatText } from "@/lib/format";
+import { formatDate, formatDateTime, formatText } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { isDeliveryStop, isPickupStop } from "@/lib/tai/status";
 
@@ -25,21 +27,55 @@ export const metadata = {
   description: "Shipments synchronized from TAI.",
 };
 
-function stopSummary(
-  stops: {
-    type: StopType;
-    city: string | null;
-    state: string | null;
-    postalCode: string | null;
-  }[],
-) {
-  const pickup = stops.find((stop) => isPickupStop(stop.type)) ?? stops.at(0);
-  const delivery = [...stops].reverse().find((stop) => isDeliveryStop(stop.type)) ?? stops.at(-1);
+type StopDates = {
+  type: StopType;
+  windowStart: Date | null;
+  appointmentTime: Date | null;
+  actualArrivalAt: Date | null;
+  actualDepartureAt: Date | null;
+};
+
+/** A date plus whether it already happened or is still only scheduled. */
+type ResolvedDate = { value: Date | null; actual: boolean };
+
+/**
+ * Ship date is when the freight actually left the first collecting stop, and
+ * falls back through the scheduled dates when it has not moved yet. Delivery
+ * date is the mirror image at the last dropping stop.
+ *
+ * Both are derived rather than stored: TAI has no single "ship date" field, and
+ * duplicating one onto Shipment would immediately drift from the stop rows.
+ */
+function shipmentDates(stops: StopDates[]): { ship: ResolvedDate; delivery: ResolvedDate } {
+  const pickup = stops.find((stop) => isPickupStop(stop.type));
+  const delivery = [...stops].reverse().find((stop) => isDeliveryStop(stop.type));
+
+  const resolve = (stop: StopDates | undefined, actual: Date | null): ResolvedDate => {
+    if (!stop) return { value: null, actual: false };
+    if (actual) return { value: actual, actual: true };
+    return { value: stop.appointmentTime ?? stop.windowStart, actual: false };
+  };
 
   return {
-    origin: pickup ? formatLocation(pickup) : "—",
-    destination: delivery && delivery !== pickup ? formatLocation(delivery) : "—",
+    ship: resolve(pickup, pickup?.actualDepartureAt ?? pickup?.actualArrivalAt ?? null),
+    delivery: resolve(delivery, delivery?.actualArrivalAt ?? null),
   };
+}
+
+/** Scheduled dates are italic and muted so a plan is never read as a fact. */
+function DateCell({ date, label }: { date: ResolvedDate; label: string }) {
+  if (!date.value) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+
+  return (
+    <span
+      className={date.actual ? "tabular-nums" : "tabular-nums text-muted-foreground italic"}
+      title={date.actual ? `Actual ${label}` : `Scheduled — not yet ${label}`}
+    >
+      {formatDate(date.value)}
+    </span>
+  );
 }
 
 export default async function ShipmentsPage() {
@@ -48,32 +84,27 @@ export default async function ShipmentsPage() {
     select: {
       id: true,
       taiShipmentId: true,
-      status: true,
-      shipmentType: true,
-      serviceLevel: true,
+      customerName: true,
       carrierName: true,
-      proNumber: true,
+      status: true,
       updatedAt: true,
       stops: {
         orderBy: { sequence: "asc" },
-        select: { type: true, city: true, state: true, postalCode: true },
+        select: {
+          type: true,
+          windowStart: true,
+          appointmentTime: true,
+          actualArrivalAt: true,
+          actualDepartureAt: true,
+        },
       },
-      _count: { select: { stops: true, events: true, alerts: true } },
     },
   });
 
-  return (
-    <main className="mx-auto w-full max-w-7xl px-6 py-10">
-      <header className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Shipments</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {shipments.length === 0
-            ? "Nothing synchronized from TAI yet."
-            : `${shipments.length} shipment${shipments.length === 1 ? "" : "s"} synchronized from TAI.`}
-        </p>
-      </header>
-
-      {shipments.length === 0 ? (
+  if (shipments.length === 0) {
+    return (
+      <main className="mx-auto w-full max-w-7xl px-6 py-10">
+        <h1 className="mb-6 text-2xl font-semibold tracking-tight">Shipments</h1>
         <Card>
           <CardHeader>
             <CardTitle>No shipments yet</CardTitle>
@@ -82,70 +113,97 @@ export default async function ShipmentsPage() {
             </CardDescription>
           </CardHeader>
         </Card>
-      ) : (
-        <Card className="overflow-hidden p-0">
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>TAI ID</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Origin</TableHead>
-                  <TableHead>Destination</TableHead>
-                  <TableHead>Carrier</TableHead>
-                  <TableHead>Mode</TableHead>
-                  <TableHead>PRO</TableHead>
-                  <TableHead className="text-right">Stops</TableHead>
-                  <TableHead className="text-right">Events</TableHead>
-                  <TableHead className="text-right">Last update</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {shipments.map((shipment) => {
-                  const { origin, destination } = stopSummary(shipment.stops);
+      </main>
+    );
+  }
 
-                  return (
-                    // `relative` + the stretched link below turns the whole row
-                    // into one real anchor: keyboard focusable and
-                    // right-clickable, without needing a client component.
-                    <TableRow key={shipment.id} className="relative cursor-pointer">
-                      <TableCell>
-                        <Link
-                          href={`/shipments/${shipment.id}`}
-                          className="font-medium underline-offset-4 after:absolute after:inset-0 hover:underline"
-                        >
-                          {shipment.taiShipmentId ?? "—"}
-                        </Link>
-                      </TableCell>
-                      <TableCell>
-                        <ShipmentStatusBadge status={shipment.status} />
-                      </TableCell>
-                      <TableCell>{origin}</TableCell>
-                      <TableCell>{destination}</TableCell>
-                      <TableCell>{formatText(shipment.carrierName)}</TableCell>
-                      <TableCell>
-                        {formatText(
-                          [shipment.shipmentType, shipment.serviceLevel].filter(Boolean).join(" · "),
-                        )}
-                      </TableCell>
-                      <TableCell>{formatText(shipment.proNumber)}</TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {shipment._count.stops}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {shipment._count.events}
-                      </TableCell>
-                      <TableCell className="text-right whitespace-nowrap text-muted-foreground">
-                        {formatDateTime(shipment.updatedAt)}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
-        </Card>
-      )}
+  return (
+    <main className="mx-auto w-full max-w-7xl px-6 py-10">
+      <header className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
+        <h1 className="text-2xl font-semibold tracking-tight">Shipments</h1>
+        <p className="text-sm text-muted-foreground">{shipments.length} synchronized from TAI</p>
+      </header>
+
+      <Card className="overflow-hidden p-0">
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Shipment ID</TableHead>
+                <TableHead>Customer</TableHead>
+                <TableHead>Ship date</TableHead>
+                <TableHead>Delivery date</TableHead>
+                <TableHead>Carrier</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Last updated</TableHead>
+                <TableHead className="w-10 text-right">
+                  <span className="sr-only">View</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {shipments.map((shipment) => {
+                const { ship, delivery } = shipmentDates(shipment.stops);
+                const href = `/shipments/${shipment.id}`;
+
+                return (
+                  <TableRow key={shipment.id}>
+                    <TableCell>
+                      <Link
+                        href={href}
+                        className="font-medium tabular-nums underline-offset-4 hover:underline"
+                      >
+                        {shipment.taiShipmentId ?? "—"}
+                      </Link>
+                    </TableCell>
+
+                    <TableCell
+                      className="max-w-[16rem] truncate"
+                      title={shipment.customerName ?? ""}
+                    >
+                      {formatText(shipment.customerName)}
+                    </TableCell>
+
+                    <TableCell className="whitespace-nowrap">
+                      <DateCell date={ship} label="shipped" />
+                    </TableCell>
+
+                    <TableCell className="whitespace-nowrap">
+                      <DateCell date={delivery} label="delivered" />
+                    </TableCell>
+
+                    <TableCell
+                      className="max-w-[14rem] truncate"
+                      title={shipment.carrierName ?? ""}
+                    >
+                      {formatText(shipment.carrierName)}
+                    </TableCell>
+
+                    <TableCell>
+                      <ShipmentStatusBadge status={shipment.status} />
+                    </TableCell>
+
+                    <TableCell className="whitespace-nowrap text-muted-foreground">
+                      {formatDateTime(shipment.updatedAt)}
+                    </TableCell>
+
+                    <TableCell className="text-right">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`View shipment ${shipment.taiShipmentId ?? ""}`}
+                        render={<Link href={href} />}
+                      >
+                        <EyeIcon />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      </Card>
     </main>
   );
 }

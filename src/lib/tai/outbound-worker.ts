@@ -10,6 +10,8 @@ import {
   type CallContext,
   type PublicApiAddShipmentAlert,
   type PublicApiShipmentAlert,
+  type PublicApiShipmentTracking,
+  type PublicApiShipmentTrackingUpdateShort,
   type TaiCallResult,
 } from "./api-client";
 
@@ -32,7 +34,10 @@ export const STOP_TRACKING_UPDATE = "STOP_TRACKING_UPDATE";
 export const ACTIVITY_LOG_CREATE = "ACTIVITY_LOG_CREATE";
 
 /** Payload shape for STOP_TRACKING_UPDATE — the id rides in the URL, not the body. */
-export type StopTrackingPayload = { shipmentStopId: number; body: Record<string, unknown> };
+export type StopTrackingPayload = {
+  shipmentStopId: number;
+  body: PublicApiShipmentTrackingUpdateShort;
+};
 
 /** 30s, 1m, 2m, 4m … capped at an hour. */
 function backoffMs(attempt: number): number {
@@ -133,7 +138,7 @@ async function dispatch(job: ClaimedJob, context: CallContext): Promise<TaiCallR
       return resolveAlerts(job.payload as unknown as PublicApiAddShipmentAlert, context);
 
     case TRACKING_UPDATE:
-      return updateTracking(job.payload, context);
+      return updateTracking(job.payload as unknown as PublicApiShipmentTracking, context);
 
     case STOP_TRACKING_UPDATE: {
       const payload = job.payload as unknown as StopTrackingPayload;

@@ -1,3 +1,5 @@
+import { POD_SIGNED_BY_MAX, type TaiShipmentStatus } from "./api-client";
+import { isDeliveryStop, isPickupStop } from "./status";
 import {
   ACTIVITY_LOG_CREATE,
   STOP_TRACKING_UPDATE,
@@ -112,16 +114,21 @@ async function loadStop(shipmentId: string, stopId: string) {
 /**
  * Field names for `PUT /Tracking/{shipmentStopId}`.
  *
- * ⚠️ §4.2 documents only the pickup pair (`actualPickupArrivalDateTime` /
- * `actualPickupDepartureDateTime`). The delivery equivalents are not specified,
- * so the POD names the shipment-level call uses are applied by analogy. Confirm
- * with TAI before trusting delivery-stop pushes — the local columns are correct
- * either way, so only the outbound body is at risk.
+ * One pair for every stop type. `PublicAPIShipmentTrackingUpdateShort` has no
+ * delivery-specific arrival/departure fields — the stop is identified by the
+ * path parameter, so `actualPickup*` means "this stop's arrival / departure"
+ * regardless of whether it is a pickup or a drop.
  */
-function stopTimestampFields(stopType: StopType): { arrival: string; departure: string } {
-  return stopType === "DELIVERY"
-    ? { arrival: "proofOfDeliveryArrivalDateTime", departure: "proofOfDeliveryDepartureDateTime" }
-    : { arrival: "actualPickupArrivalDateTime", departure: "actualPickupDepartureDateTime" };
+const STOP_ARRIVAL_FIELD = "actualPickupArrivalDateTime" as const;
+const STOP_DEPARTURE_FIELD = "actualPickupDepartureDateTime" as const;
+
+/** Appointment window fields differ by stop type, though (both are on the schema). */
+function stopAppointmentFields(stopType: StopType): { begin: string; end: string } {
+  // A BOTH stop is delivery-like too; its appointment is sent as the delivery
+  // pair, which is the half that gates the receiver.
+  return isDeliveryStop(stopType)
+    ? { begin: "deliveryAppointmentBeginDateTime", end: "deliveryAppointmentEndDateTime" }
+    : { begin: "pickupAppointmentBeginDateTime", end: "pickupAppointmentEndDateTime" };
 }
 
 // --- Driver (§5: local only) ----------------------------------------------
@@ -233,7 +240,6 @@ export async function recordStopArrival(
   }
 
   const occurredAt = new Date();
-  const fields = stopTimestampFields(stop.type);
 
   await prisma.$transaction(async (tx) => {
     await tx.shipmentStop.update({
@@ -244,14 +250,15 @@ export async function recordStopArrival(
     await recordEvent(tx, {
       shipmentId,
       stopId: stop.id,
-      type: stop.type === "DELIVERY" ? "ARRIVED_AT_DELIVERY" : "ARRIVED_AT_PICKUP",
+      // BOTH counts as a delivery arrival — the freight has reached a drop.
+      type: isDeliveryStop(stop.type) ? "ARRIVED_AT_DELIVERY" : "ARRIVED_AT_PICKUP",
       occurredAt,
       details: { sequence: stop.sequence, stopType: stop.type },
       sync: {
         kind: "stopTracking",
         payload: {
           shipmentStopId: stop.taiShipmentStopId!,
-          body: { [fields.arrival]: occurredAt.toISOString() },
+          body: { [STOP_ARRIVAL_FIELD]: occurredAt.toISOString() },
         },
       },
     });
@@ -280,7 +287,6 @@ export async function recordStopDeparture(
   }
 
   const occurredAt = new Date();
-  const fields = stopTimestampFields(stop.type);
 
   await prisma.$transaction(async (tx) => {
     await tx.shipmentStop.update({
@@ -291,15 +297,15 @@ export async function recordStopDeparture(
     await recordEvent(tx, {
       shipmentId,
       stopId: stop.id,
-      // Departing the pickup is the moment the freight is on board.
-      type: stop.type === "PICKUP" ? "PICKED_UP" : "IN_TRANSIT",
+      // Departing a stop that collects freight is the moment it is on board.
+      type: isPickupStop(stop.type) ? "PICKED_UP" : "IN_TRANSIT",
       occurredAt,
       details: { sequence: stop.sequence, stopType: stop.type },
       sync: {
         kind: "stopTracking",
         payload: {
           shipmentStopId: stop.taiShipmentStopId!,
-          body: { [fields.departure]: occurredAt.toISOString() },
+          body: { [STOP_DEPARTURE_FIELD]: occurredAt.toISOString() },
         },
       },
     });
@@ -315,6 +321,9 @@ export async function capturePod(
 ): Promise<LifecycleResult> {
   const name = signedBy.trim().replace(/\s+/g, " ");
   if (!name) return { ok: false, error: "Enter who signed for the delivery." };
+  if (name.length > POD_SIGNED_BY_MAX) {
+    return { ok: false, error: `Signature must be ${POD_SIGNED_BY_MAX} characters or fewer.` };
+  }
 
   const shipment = await loadShipment(shipmentId);
   if (!shipment) return { ok: false, error: "Shipment not found." };
@@ -358,38 +367,131 @@ export async function capturePod(
   return { ok: true };
 }
 
-// --- Shipment-level status (§4.2) -----------------------------------------
+// --- Stop appointment windows ---------------------------------------------
 
-/** TAI's label for each status we push (§4.3). */
-const TAI_STATUS_LABEL: Partial<Record<ShipmentStatus, string>> = {
+/**
+ * Updates one stop's appointment window.
+ *
+ * `PublicAPIShipmentTrackingUpdateShort` carries both a pickup and a delivery
+ * appointment pair; which one applies is chosen from the stop's own type.
+ *
+ * ⚠️ TAI distinguishes *estimated* from *appointment* windows on a stop, while
+ * our `shipment_stops` collapses both into `window_start` / `window_end`. An
+ * appointment written here therefore overwrites whatever estimate arrived from
+ * a webhook. Splitting the columns is the fix if that distinction matters.
+ */
+export async function updateStopAppointment(
+  shipmentId: string,
+  stopId: string,
+  input: { begin: string; end: string },
+): Promise<LifecycleResult> {
+  const begin = input.begin ? new Date(input.begin) : null;
+  const end = input.end ? new Date(input.end) : null;
+
+  if (!begin || Number.isNaN(begin.getTime())) {
+    return { ok: false, error: "Enter a valid appointment start." };
+  }
+  if (end && Number.isNaN(end.getTime())) {
+    return { ok: false, error: "Enter a valid appointment end." };
+  }
+  if (end && end < begin) {
+    return { ok: false, error: "Appointment end cannot be before its start." };
+  }
+
+  const shipment = await loadShipment(shipmentId);
+  if (!shipment) return { ok: false, error: "Shipment not found." };
+
+  const stop = await loadStop(shipmentId, stopId);
+  if (!stop) return { ok: false, error: "Stop not found." };
+  if (stop.taiShipmentStopId === null) {
+    return { ok: false, error: "This stop has no TAI stop ID, so it cannot be synced." };
+  }
+
+  const occurredAt = new Date();
+  const fields = stopAppointmentFields(stop.type);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.shipmentStop.update({
+      where: { id: stop.id },
+      data: { windowStart: begin, windowEnd: end, appointmentTime: begin },
+    });
+
+    await recordEvent(tx, {
+      shipmentId,
+      stopId: stop.id,
+      type: "SHIPMENT_DETAILS_UPDATED",
+      occurredAt,
+      details: {
+        sequence: stop.sequence,
+        stopType: stop.type,
+        appointmentBegin: begin.toISOString(),
+        appointmentEnd: end?.toISOString() ?? null,
+      },
+      sync: {
+        kind: "stopTracking",
+        payload: {
+          shipmentStopId: stop.taiShipmentStopId!,
+          body: {
+            [fields.begin]: begin.toISOString(),
+            ...(end ? { [fields.end]: end.toISOString() } : {}),
+          },
+        },
+      },
+    });
+  });
+
+  return { ok: true };
+}
+
+// --- Shipment-level status ------------------------------------------------
+
+/**
+ * Our enum → TAI's `shipmentStatus` label. The two vocabularies line up
+ * one-to-one, so every status we hold can be pushed.
+ */
+const TAI_STATUS_LABEL: Record<ShipmentStatus, TaiShipmentStatus> = {
+  QUOTE: "Quote",
+  COMMITTED: "Committed",
+  READY: "Ready",
+  SENT: "Sent",
+  DISPATCHED: "Dispatched",
   IN_TRANSIT: "In Transit",
+  OUT_FOR_DELIVERY: "Out for Delivery",
   DELIVERED: "Delivered",
+  COMPLETE: "Complete",
+  CANCELED: "Canceled",
+};
+
+/** Statuses that have a dedicated audit event; the rest log the generic one. */
+const STATUS_EVENT_TYPE: Partial<Record<ShipmentStatus, ShipmentEventType>> = {
+  IN_TRANSIT: "IN_TRANSIT",
+  DELIVERED: "DELIVERED",
 };
 
 export async function setShipmentStatus(
   shipmentId: string,
-  status: "IN_TRANSIT" | "DELIVERED",
+  status: ShipmentStatus,
 ): Promise<LifecycleResult> {
   const shipment = await loadShipment(shipmentId);
   if (!shipment) return { ok: false, error: "Shipment not found." };
+
+  const label = TAI_STATUS_LABEL[status];
+  if (!label) return { ok: false, error: `Unsupported status "${String(status)}".` };
   if (shipment.status === status) {
-    return { ok: false, error: `Shipment is already ${TAI_STATUS_LABEL[status]}.` };
-  }
-  if (shipment.status === "CANCELED") {
-    return { ok: false, error: "This shipment is canceled." };
+    return { ok: false, error: `Shipment is already ${label}.` };
   }
   if (shipment.taiShipmentId === null) {
     return { ok: false, error: "This shipment has no TAI shipment ID, so nothing can be synced." };
   }
 
   const occurredAt = new Date();
-  const label = TAI_STATUS_LABEL[status]!;
 
-  // On delivery, §4.2 wants the POD timestamp pair alongside the status.
+  // On delivery, the spec lets the shipment-level call carry the POD trio
+  // alongside the status, so send whatever the delivery stop already holds.
   const podStop =
     status === "DELIVERED"
       ? await prisma.shipmentStop.findFirst({
-          where: { shipmentId, type: "DELIVERY" },
+          where: { shipmentId, type: { in: ["LAST_DROP", "DROP", "BOTH"] } },
           orderBy: { sequence: "desc" },
           select: { podArrivalAt: true, podDepartureAt: true, podSignedBy: true },
         })
@@ -403,7 +505,7 @@ export async function setShipmentStatus(
 
     await recordEvent(tx, {
       shipmentId,
-      type: status === "IN_TRANSIT" ? "IN_TRANSIT" : "DELIVERED",
+      type: STATUS_EVENT_TYPE[status] ?? "SHIPMENT_STATUS_UPDATED",
       occurredAt,
       details: { status, taiLabel: label },
       sync: {

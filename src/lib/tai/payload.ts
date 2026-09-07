@@ -156,13 +156,13 @@ function normalizeStops(body: Json): NormalizedStop[] {
   // §7 sketches the shipment as pickup + receiver rather than a stop list, so
   // fall back to that shape and synthesize the two rows the table expects.
   const stops: NormalizedStop[] = [];
-  const pickup = normalizeStop(pick(body, "pickup", "shipper", "origin"), 1, "PICKUP");
+  const pickup = normalizeStop(pick(body, "pickup", "shipper", "origin"), 1, "FIRST_PICKUP");
   if (pickup) stops.push(pickup);
 
   const delivery = normalizeStop(
     pick(body, "receiver", "consignee", "delivery", "destination"),
     stops.length + 1,
-    "DELIVERY",
+    "LAST_DROP",
   );
   if (delivery) stops.push(delivery);
 

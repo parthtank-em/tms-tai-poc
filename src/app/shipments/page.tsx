@@ -12,6 +12,9 @@ import {
 } from "@/components/ui/table";
 import { formatDateTime, formatLocation, formatText } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { isDeliveryStop, isPickupStop } from "@/lib/tai/status";
+
+import type { StopType } from "@/generated/prisma/enums";
 
 // Shipments change whenever a TAI webhook lands, so this list is always read
 // fresh rather than served from a cached render.
@@ -22,9 +25,16 @@ export const metadata = {
   description: "Shipments synchronized from TAI.",
 };
 
-function stopSummary(stops: { type: string; city: string | null; state: string | null; postalCode: string | null }[]) {
-  const pickup = stops.find((stop) => stop.type === "PICKUP") ?? stops.at(0);
-  const delivery = [...stops].reverse().find((stop) => stop.type === "DELIVERY") ?? stops.at(-1);
+function stopSummary(
+  stops: {
+    type: StopType;
+    city: string | null;
+    state: string | null;
+    postalCode: string | null;
+  }[],
+) {
+  const pickup = stops.find((stop) => isPickupStop(stop.type)) ?? stops.at(0);
+  const delivery = [...stops].reverse().find((stop) => isDeliveryStop(stop.type)) ?? stops.at(-1);
 
   return {
     origin: pickup ? formatLocation(pickup) : "—",

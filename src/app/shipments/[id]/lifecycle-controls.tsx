@@ -8,6 +8,7 @@ import {
   setStatusAction,
   stopArrivalAction,
   stopDepartureAction,
+  updateAppointmentAction,
   verifyDriverAction,
   type ActionState,
 } from "./lifecycle-actions";
@@ -25,6 +26,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 /**
  * Inline lifecycle controls for use case 3.
@@ -119,6 +127,20 @@ function ActionButton({
   );
 }
 
+/** All ten statuses, in lifecycle order, labelled as TAI labels them. */
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "QUOTE", label: "Quote" },
+  { value: "COMMITTED", label: "Committed" },
+  { value: "READY", label: "Ready" },
+  { value: "SENT", label: "Sent" },
+  { value: "DISPATCHED", label: "Dispatched" },
+  { value: "IN_TRANSIT", label: "In Transit" },
+  { value: "OUT_FOR_DELIVERY", label: "Out for Delivery" },
+  { value: "DELIVERED", label: "Delivered" },
+  { value: "COMPLETE", label: "Complete" },
+  { value: "CANCELED", label: "Canceled" },
+];
+
 export function StatusControls({
   shipmentId,
   status,
@@ -126,42 +148,68 @@ export function StatusControls({
   shipmentId: string;
   status: string;
 }) {
+  const { pending, run } = useFeedback();
+  const [next, setNext] = useState<string | null>(null);
+
   return (
-    <div className="flex items-center gap-2">
-      <ActionButton
-        fields={{ shipmentId, status: "IN_TRANSIT" }}
-        action={setStatusAction}
-        disabled={status === "IN_TRANSIT"}
-        title="PUT /Tracking · shipmentStatus: In Transit"
+    <form
+      action={(formData) => {
+        run(async () => {
+          const result = await setStatusAction(formData);
+          if (!result.error) setNext(null);
+          return result;
+        });
+      }}
+      className="flex items-center gap-2"
+    >
+      <input type="hidden" name="shipmentId" value={shipmentId} />
+      <input type="hidden" name="status" value={next ?? ""} />
+
+      <Select value={next} onValueChange={(value) => setNext(value as string | null)}>
+        <SelectTrigger size="sm" className="w-44" disabled={pending}>
+          <SelectValue placeholder="Set status…" />
+        </SelectTrigger>
+        <SelectContent>
+          {STATUS_OPTIONS.map((option) => (
+            <SelectItem key={option.value} value={option.value} disabled={option.value === status}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Button
+        type="submit"
+        size="sm"
+        disabled={pending || !next || next === status}
+        title="PUT /Tracking · trackingUpdate.shipmentStatus"
       >
-        In transit
-      </ActionButton>
-      <ActionButton
-        fields={{ shipmentId, status: "DELIVERED" }}
-        action={setStatusAction}
-        disabled={status === "DELIVERED"}
-        title="PUT /Tracking · shipmentStatus: Delivered"
-      >
-        Delivered
-      </ActionButton>
-    </div>
+        Update
+      </Button>
+    </form>
   );
 }
 
 export function StopControls({
   shipmentId,
   stopId,
-  stopType,
+  isPickup,
+  isDelivery,
   hasArrived,
   hasDeparted,
   canSync,
+  windowStart,
+  windowEnd,
 }: {
   shipmentId: string;
   stopId: string;
-  stopType: string;
+  isPickup: boolean;
+  isDelivery: boolean;
   hasArrived: boolean;
   hasDeparted: boolean;
   canSync: boolean;
+  windowStart: string | null;
+  windowEnd: string | null;
 }) {
   const blocked = canSync ? undefined : "No TAI stop ID on this stop yet";
 
@@ -176,9 +224,16 @@ export function StopControls({
         Arrived
       </ActionButton>
 
-      {stopType === "DELIVERY" ? (
-        <PodDialog shipmentId={shipmentId} stopId={stopId} canSync={canSync} />
-      ) : (
+      <AppointmentDialog
+        shipmentId={shipmentId}
+        stopId={stopId}
+        canSync={canSync}
+        windowStart={windowStart}
+        windowEnd={windowEnd}
+      />
+
+      {/* A BOTH stop collects and drops, so it gets both actions. */}
+      {isPickup ? (
         <ActionButton
           fields={{ shipmentId, stopId }}
           action={stopDepartureAction}
@@ -187,7 +242,11 @@ export function StopControls({
         >
           Departed
         </ActionButton>
-      )}
+      ) : null}
+
+      {isDelivery ? (
+        <PodDialog shipmentId={shipmentId} stopId={stopId} canSync={canSync} />
+      ) : null}
     </div>
   );
 }
@@ -246,6 +305,90 @@ function PodDialog({
             </DialogClose>
             <Button type="submit" size="sm" disabled={pending}>
               {pending ? "Saving…" : "Capture"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AppointmentDialog({
+  shipmentId,
+  stopId,
+  canSync,
+  windowStart,
+  windowEnd,
+}: {
+  shipmentId: string;
+  stopId: string;
+  canSync: boolean;
+  windowStart: string | null;
+  windowEnd: string | null;
+}) {
+  const { pending, run } = useFeedback();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger
+        render={
+          <Button size="sm" variant="ghost" disabled={pending || !canSync}>
+            Appt
+          </Button>
+        }
+      />
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Appointment window</DialogTitle>
+          <DialogDescription>
+            Sent to TAI as the pickup or delivery appointment pair, chosen from this stop&apos;s type.
+            Times are UTC.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form
+          action={(formData) => {
+            run(async () => {
+              const result = await updateAppointmentAction(formData);
+              if (!result.error) setOpen(false);
+              return result;
+            });
+          }}
+          className="space-y-3"
+        >
+          <input type="hidden" name="shipmentId" value={shipmentId} />
+          <input type="hidden" name="stopId" value={stopId} />
+
+          <div className="space-y-2">
+            <Label htmlFor="appointmentBegin">Begins</Label>
+            <Input
+              id="appointmentBegin"
+              name="appointmentBegin"
+              type="datetime-local"
+              defaultValue={windowStart ?? ""}
+              required
+              className="h-9"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="appointmentEnd">Ends (optional)</Label>
+            <Input
+              id="appointmentEnd"
+              name="appointmentEnd"
+              type="datetime-local"
+              defaultValue={windowEnd ?? ""}
+              className="h-9"
+            />
+          </div>
+
+          <DialogFooter>
+            <DialogClose render={<Button type="button" variant="ghost" size="sm" />}>
+              Cancel
+            </DialogClose>
+            <Button type="submit" size="sm" disabled={pending}>
+              {pending ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>
         </form>

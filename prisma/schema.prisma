@@ -39,10 +39,16 @@ enum ShipmentStatus {
 /// Stops are rows rather than pickup/receiver columns on Shipment because the
 /// stop-level TAI endpoint `PUT /Tracking/{shipmentStopId}` (§4.2) needs a
 /// per-stop TAI id to address.
+///
+/// Mirrors `PublicAPIShippingAddress.stopType` exactly. `BOTH` is a stop that
+/// drops *and* collects, so it counts as both pickup-like and delivery-like —
+/// see `isPickupStop` / `isDeliveryStop` in src/lib/tai/status.ts.
 enum StopType {
-  PICKUP
-  DELIVERY
-  INTERMEDIATE
+  FIRST_PICKUP
+  LAST_DROP
+  PICK
+  DROP
+  BOTH
 }
 
 /// Which side produced an event — inbound webhook, a read back from TAI's REST

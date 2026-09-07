@@ -4,12 +4,14 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 
 import { requireSession } from "@/lib/auth/guard";
+import type { ShipmentStatus } from "@/generated/prisma/enums";
 import {
   assignDriver,
   capturePod,
   recordStopArrival,
   recordStopDeparture,
   setShipmentStatus,
+  updateStopAppointment,
   verifyDriverIdentity,
   type LifecycleResult,
 } from "@/lib/tai/lifecycle";
@@ -94,15 +96,40 @@ export async function capturePodAction(formData: FormData): Promise<ActionState>
   );
 }
 
+/** Every status our enum holds maps 1:1 onto TAI's, so all ten are allowed. */
+const STATUSES: ShipmentStatus[] = [
+  "QUOTE",
+  "COMMITTED",
+  "READY",
+  "SENT",
+  "DISPATCHED",
+  "IN_TRANSIT",
+  "OUT_FOR_DELIVERY",
+  "DELIVERED",
+  "COMPLETE",
+  "CANCELED",
+];
+
 export async function setStatusAction(formData: FormData): Promise<ActionState> {
   const shipmentId = String(formData.get("shipmentId") ?? "");
-  const status = String(formData.get("status") ?? "");
+  const status = String(formData.get("status") ?? "") as ShipmentStatus;
 
-  if (status !== "IN_TRANSIT" && status !== "DELIVERED") {
-    return { error: "Unsupported status.", notice: null };
+  if (!STATUSES.includes(status)) {
+    return { error: `Unsupported status "${status}".`, notice: null };
   }
 
   return run(shipmentId, "Status updated and queued for TAI.", () =>
     setShipmentStatus(shipmentId, status),
+  );
+}
+
+export async function updateAppointmentAction(formData: FormData): Promise<ActionState> {
+  const shipmentId = String(formData.get("shipmentId") ?? "");
+  const stopId = String(formData.get("stopId") ?? "");
+  const begin = String(formData.get("appointmentBegin") ?? "");
+  const end = String(formData.get("appointmentEnd") ?? "");
+
+  return run(shipmentId, "Appointment updated and queued for TAI.", () =>
+    updateStopAppointment(shipmentId, stopId, { begin, end }),
   );
 }

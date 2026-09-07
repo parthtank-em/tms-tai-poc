@@ -33,6 +33,12 @@ import {
   humanizeEnum,
 } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { isDeliveryStop, isPickupStop, stopTypeLabel } from "@/lib/tai/status";
+
+/** `datetime-local` value for a UTC timestamp, so the field shows UTC too. */
+function toDateTimeLocal(value: Date | null): string | null {
+  return value ? value.toISOString().slice(0, 16) : null;
+}
 
 export const dynamic = "force-dynamic";
 
@@ -228,7 +234,7 @@ export default async function ShipmentDetailPage({
                     <TableRow key={stop.id}>
                       <TableCell className="text-right tabular-nums">{stop.sequence}</TableCell>
                       <TableCell>
-                        <Badge variant="outline">{humanizeEnum(stop.type)}</Badge>
+                        <Badge variant="outline">{stopTypeLabel(stop.type)}</Badge>
                       </TableCell>
                       <TableCell className="tabular-nums">
                         {stop.taiShipmentStopId ?? (
@@ -259,10 +265,13 @@ export default async function ShipmentDetailPage({
                         <StopControls
                           shipmentId={shipment.id}
                           stopId={stop.id}
-                          stopType={stop.type}
+                          isPickup={isPickupStop(stop.type)}
+                          isDelivery={isDeliveryStop(stop.type)}
                           hasArrived={stop.actualArrivalAt !== null}
                           hasDeparted={stop.actualDepartureAt !== null}
                           canSync={stop.taiShipmentStopId !== null}
+                          windowStart={toDateTimeLocal(stop.windowStart)}
+                          windowEnd={toDateTimeLocal(stop.windowEnd)}
                         />
                       </TableCell>
                     </TableRow>

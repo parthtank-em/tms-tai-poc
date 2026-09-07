@@ -243,10 +243,23 @@ section numbers.
 - **The alert-type query filters are unused.** `isManual` and `displayInFrontOffice` are both left unset,
   so every configured type is offered. `isManual=true` is the likely refinement for an operator-raised
   alert, once TAI confirms what the flag means.
-- **Use case 3's endpoints are still inferred.** Only the two alert endpoints have been checked against
-  TAI's published spec. `PUT /Tracking`, `PUT /Tracking/{shipmentStopId}` and
-  `POST /ShipmentActivityLogs` — including the delivery-stop field names — come from the findings doc
-  alone.
+- **`POST /ShipmentActivityLogs` is the last inferred endpoint.** Both tracking endpoints are now typed
+  from TAI's published OpenAPI definitions; the activity log (used for driver identity verification)
+  still comes from the findings doc alone.
+- **These two endpoints cannot update locations, contacts, carrier or driver.** Those fields exist only
+  on the *response* schema (`PublicAPIShipmentDetails` / `PublicAPIShippingAddress` /
+  `CarrierDetails`) — neither request body accepts them. Driver stays blocked by §5 regardless, since TAI
+  models it as a shipment reference number. What the requests *do* accept: status, pro/pickup number,
+  transit type, POD timestamps + signature, and both appointment window pairs.
+- **`StopType` mirrors `PublicAPIShippingAddress.stopType` exactly**: FIRST_PICKUP, LAST_DROP, PICK,
+  DROP, BOTH. Branch with `isPickupStop` / `isDeliveryStop` from `src/lib/tai/status.ts` rather than
+  comparing values — `BOTH` is true for both, which is the point of the wider enum. An unrecognised
+  label falls back to `BOTH` (the least lossy default, since it offers every action) and logs a warning;
+  silent fallthrough is how "First Pickup" and "Last Drop" were mis-typed for 64 stops before the enum
+  was known.
+- **Appointment vs estimated windows are collapsed.** TAI keeps `estimated*` and `appointment*` pairs per
+  stop; `shipment_stops` has only `window_start` / `window_end`, so saving an appointment overwrites
+  whatever estimate arrived by webhook. Splitting those columns is the fix if it matters.
 - **Nothing schedules the outbound queue.** `POST /api/jobs/outbound/run` drains it and raising an alert
   kicks it once via `after()`, but a job that fails its first attempt only retries when something calls
   that endpoint. It is also session-guarded, so a cron needs a credential that does not exist yet.

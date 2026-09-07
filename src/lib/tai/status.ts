@@ -41,27 +41,76 @@ export function mapShipmentStatus(label: string | null | undefined): ShipmentSta
 }
 
 /**
- * Stop types. TAI's exact vocabulary is not in the findings doc, so the common
- * TMS synonyms are accepted and anything unrecognised is kept as an
- * intermediate stop rather than dropped.
+ * Stop types — TAI's own vocabulary, mirrored exactly.
+ *
+ * The authoritative list is `PublicAPIShippingAddress.stopType`: **First
+ * Pickup, Last Drop, Pick, Drop, Both**. Synonyms are kept alongside because
+ * the *webhook* payload schema is not published and need not use the same
+ * words as the REST response.
  */
 const STOP_TYPE_BY_LABEL: Record<string, StopType> = {
-  pickup: "PICKUP",
-  "pick up": "PICKUP",
-  pick: "PICKUP",
-  shipper: "PICKUP",
-  origin: "PICKUP",
-  delivery: "DELIVERY",
-  deliver: "DELIVERY",
-  consignee: "DELIVERY",
-  receiver: "DELIVERY",
-  destination: "DELIVERY",
-  drop: "DELIVERY",
-  intermediate: "INTERMEDIATE",
-  stop: "INTERMEDIATE",
+  // Spec enum
+  "first pickup": "FIRST_PICKUP",
+  "last drop": "LAST_DROP",
+  pick: "PICK",
+  drop: "DROP",
+  both: "BOTH",
+
+  // Synonyms. These map to the generic PICK / DROP rather than the
+  // first/last variants, since a payload saying "Pickup" makes no claim
+  // about position in the route.
+  pickup: "PICK",
+  "pick up": "PICK",
+  shipper: "PICK",
+  origin: "FIRST_PICKUP",
+  delivery: "DROP",
+  deliver: "DROP",
+  consignee: "DROP",
+  receiver: "DROP",
+  destination: "LAST_DROP",
+  "last delivery": "LAST_DROP",
+  intermediate: "BOTH",
+  stop: "BOTH",
 };
 
+/**
+ * Unrecognised labels fall back to BOTH — the least lossy choice, since a
+ * both-ways stop offers every action. It also warns: silent fallthrough is
+ * exactly how "First Pickup" and "Last Drop" were mis-typed for 64 stops
+ * before the spec enum was known.
+ */
 export function mapStopType(label: string | null | undefined): StopType {
-  if (!label) return "INTERMEDIATE";
-  return STOP_TYPE_BY_LABEL[normalizeLabel(label)] ?? "INTERMEDIATE";
+  if (!label) return "BOTH";
+
+  const mapped = STOP_TYPE_BY_LABEL[normalizeLabel(label)];
+  if (!mapped) {
+    console.warn(`[tai] Unmapped stopType "${label}" — defaulting to BOTH.`);
+    return "BOTH";
+  }
+
+  return mapped;
+}
+
+/**
+ * Does freight get collected here? `BOTH` answers yes to this *and* to
+ * `isDeliveryStop`, which is the whole reason the enum was widened.
+ */
+export function isPickupStop(type: StopType): boolean {
+  return type === "FIRST_PICKUP" || type === "PICK" || type === "BOTH";
+}
+
+/** Does freight get dropped here? */
+export function isDeliveryStop(type: StopType): boolean {
+  return type === "LAST_DROP" || type === "DROP" || type === "BOTH";
+}
+
+/** Short label for the UI. */
+export function stopTypeLabel(type: StopType): string {
+  return {
+    FIRST_PICKUP: "First Pickup",
+    LAST_DROP: "Last Drop",
+    PICK: "Pick",
+    DROP: "Drop",
+    BOTH: "Both",
+  }[type];
 }

@@ -34,9 +34,9 @@ const PATHS = {
   alerts: `${SHIPPING_PREFIX}/Alerts`,
   alertsResolved: `${SHIPPING_PREFIX}/Alerts/Resolved`,
   brokerAlertTypes: `${BROKER_PREFIX}/Alerts`,
-  // Use case 3 (§4.2). Not covered by the pasted OpenAPI definition, so these
-  // are still inferred from the findings doc rather than verified.
   tracking: `${SHIPPING_PREFIX}/Tracking`,
+  // Use case 3's activity log is still inferred from the findings doc — no
+  // OpenAPI definition for it yet.
   activityLogs: `${SHIPPING_PREFIX}/ShipmentActivityLogs`,
 } as const;
 
@@ -292,23 +292,187 @@ export function asAlerts(data: unknown): PublicApiShipmentAlert[] {
   return data && typeof data === "object" ? [data as PublicApiShipmentAlert] : [];
 }
 
-// --- Use case 3: lifecycle sync (§4.2, not in the pasted spec) -------------
+// --- Use case 3: lifecycle sync -------------------------------------------
 
-/** `PUT /Tracking` — shipment-level status and POD timestamps. */
-export function updateTracking(body: unknown, context: CallContext) {
+/** `shipmentStatus` / carrier `status` enum, shared by both tracking schemas. */
+export const TAI_SHIPMENT_STATUSES = [
+  "Quote",
+  "Committed",
+  "Ready",
+  "Sent",
+  "Dispatched",
+  "In Transit",
+  "Out for Delivery",
+  "Delivered",
+  "Complete",
+  "Canceled",
+] as const;
+export type TaiShipmentStatus = (typeof TAI_SHIPMENT_STATUSES)[number];
+
+/** `PublicAPIShipmentTracking.transitType` */
+export const TAI_TRANSIT_TYPES = [
+  "PickupLocal",
+  "Linehaul",
+  "DeliveryLocal",
+  "Ocean",
+  "Air",
+  "Insurance",
+  "Customs",
+  "Lumper",
+  "Warehouse",
+  "Other",
+  "Consolidation",
+  "TONU",
+] as const;
+export type TaiTransitType = (typeof TAI_TRANSIT_TYPES)[number];
+
+/** `proofOfDeliverySignedBy` is capped at 200 characters in both schemas. */
+export const POD_SIGNED_BY_MAX = 200;
+
+/**
+ * `TMSFoundation.Models.PublicAPI.v2.PublicAPIShipmentTrackingUpdateShort`
+ * — the body of `PUT /Tracking/{shipmentStopId}`.
+ *
+ * ⚠️ Note what is **absent**: there is no `proofOfDeliveryArrivalDateTime` or
+ * `…DepartureDateTime` here. Those exist only on the shipment-level schema. At
+ * stop level the `actualPickup*` pair carries arrival and departure for *every*
+ * stop type — the names read as pickup-specific, but the stop is identified by
+ * the path parameter, so they mean "this stop's arrival / departure".
+ */
+export type PublicApiShipmentTrackingUpdateShort = {
+  actualPickupArrivalDateTime?: string;
+  actualPickupDepartureDateTime?: string;
+  pickupAppointmentBeginDateTime?: string;
+  pickupAppointmentEndDateTime?: string;
+  deliveryAppointmentBeginDateTime?: string;
+  deliveryAppointmentEndDateTime?: string;
+  /** maxLength 200 */
+  proofOfDeliverySignedBy?: string;
+};
+
+/** `TMSFoundation.Models.PublicAPI.v2.PublicAPIShipmentTrackingUpdate` */
+export type PublicApiShipmentTrackingUpdate = {
+  pickupNumber?: string;
+  shipmentStatus?: TaiShipmentStatus;
+  pickupReadyDateTime?: string;
+  pickupCloseDateTime?: string;
+  deliveryEstimatedDateTime?: string;
+  deliveryCloseDateTime?: string;
+  proofOfDeliveryArrivalDateTime?: string;
+  proofOfDeliveryDepartureDateTime?: string;
+  /** maxLength 200 */
+  proofOfDeliverySignedBy?: string;
+  actualPickupArrivalDateTime?: string;
+  actualPickupDepartureDateTime?: string;
+  pickupAppointmentBeginDateTime?: string;
+  pickupAppointmentEndDateTime?: string;
+  deliveryAppointmentBeginDateTime?: string;
+  deliveryAppointmentEndDateTime?: string;
+};
+
+/**
+ * `TMSFoundation.Models.PublicAPI.v2.PublicAPIShipmentTracking`
+ * — the body of `PUT /Tracking`.
+ */
+export type PublicApiShipmentTracking = {
+  /** int32 */
+  shipmentId: number;
+  proNumber?: string;
+  transitType?: TaiTransitType;
+  trackingUpdate?: PublicApiShipmentTrackingUpdate;
+};
+
+/**
+ * Both tracking endpoints answer 200 with an array of
+ * `PublicAPIShipmentDetails` — the whole shipment as TAI now holds it. Only the
+ * fields we reconcile against are typed here; the raw body is kept in
+ * `tai_api_calls.response_body` regardless.
+ */
+export type PublicApiShipmentDetailsSlice = {
+  shipmentId?: number;
+  status?: TaiShipmentStatus;
+  mileage?: number;
+  driverCellPhoneNumber?: string;
+  stops?: {
+    shipmentStopId?: number;
+    actualArrivalDateTime?: string;
+    actualDepartureDateTime?: string;
+    appointmentReadyDateTime?: string;
+    appointmentCloseDateTime?: string;
+  }[];
+};
+
+function tooLong(value: string | undefined, max: number, field: string): string | null {
+  return value !== undefined && value.length > max
+    ? `${field} must be ${max} characters or fewer; got ${value.length}.`
+    : null;
+}
+
+/**
+ * **Update Tracking** — `PUT /PublicApi/Shipping/v2/Tracking`
+ * "Update tracking for an existing shipment by shipment id."
+ * operationId `PublicAPIShipping_TrackingUpdate`
+ *
+ * Shipment-level: overall status, pro/pickup numbers, POD timestamps and
+ * signature, and both appointment windows.
+ */
+export async function updateTracking(
+  body: PublicApiShipmentTracking,
+  context: CallContext,
+): Promise<TaiCallResult> {
+  if (!isValidTaiShipmentId(body.shipmentId)) {
+    return {
+      ok: false,
+      status: null,
+      error: `shipmentId must be an int32 between 1 and ${INT32_MAX}; got ${String(body.shipmentId)}.`,
+      retryable: false,
+    };
+  }
+
+  const invalid = tooLong(
+    body.trackingUpdate?.proofOfDeliverySignedBy,
+    POD_SIGNED_BY_MAX,
+    "proofOfDeliverySignedBy",
+  );
+  if (invalid) return { ok: false, status: null, error: invalid, retryable: false };
+
   return call("PUT", PATHS.tracking, body, context);
 }
 
 /**
- * `PUT /Tracking/{shipmentStopId}` — arrival/departure and POD signature for
- * one specific stop. Used for multi-stop shipments where the event must attach
- * to the correct stop rather than the shipment as a whole (§4.2).
+ * **Update Stop Dates and POD** — `PUT /PublicApi/Shipping/v2/Tracking/{shipmentStopId}`
+ * "Update dates and POD by shipment stop id."
+ * operationId `PublicAPIShipping_TrackingUpdatePickupDeliveryTimes`
+ *
+ * Stop-level: this stop's actual arrival/departure, its appointment window, and
+ * the POD signature. Use it for multi-stop shipments where the event must
+ * attach to the correct stop rather than the shipment as a whole.
  */
-export function updateStopTracking(shipmentStopId: number, body: unknown, context: CallContext) {
+export async function updateStopTracking(
+  shipmentStopId: number,
+  body: PublicApiShipmentTrackingUpdateShort,
+  context: CallContext,
+): Promise<TaiCallResult> {
+  if (!isValidTaiShipmentId(shipmentStopId)) {
+    return {
+      ok: false,
+      status: null,
+      error: `shipmentStopId must be an int32 between 1 and ${INT32_MAX}; got ${String(shipmentStopId)}.`,
+      retryable: false,
+    };
+  }
+
+  const invalid = tooLong(body.proofOfDeliverySignedBy, POD_SIGNED_BY_MAX, "proofOfDeliverySignedBy");
+  if (invalid) return { ok: false, status: null, error: invalid, retryable: false };
+
   return call("PUT", `${PATHS.tracking}/${shipmentStopId}`, body, context);
 }
 
-/** `POST /ShipmentActivityLogs` — free-text lifecycle note (§4.2). */
+/**
+ * `POST /ShipmentActivityLogs` — free-text lifecycle note (§4.2).
+ *
+ * ⚠️ Still inferred from the findings doc; no OpenAPI definition seen for it.
+ */
 export function createActivityLog(body: unknown, context: CallContext) {
   return call("POST", PATHS.activityLogs, body, context);
 }

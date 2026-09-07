@@ -2,6 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { AlertsDialog } from "./alerts-dialog";
+import {
+  DriverDialog,
+  LifecycleFeedback,
+  StatusControls,
+  StopControls,
+} from "./lifecycle-controls";
 
 import {
   ProcessingStatusBadge,
@@ -63,6 +69,7 @@ export default async function ShipmentDetailPage({
   }
 
   return (
+    <LifecycleFeedback>
     <main className="mx-auto w-full max-w-6xl px-6 py-10">
       <Link
         href="/shipments"
@@ -83,7 +90,14 @@ export default async function ShipmentDetailPage({
         ) : null}
         {shipment.loadHazmat ? <Badge variant="destructive">Hazmat</Badge> : null}
 
-        <div className="ml-auto">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <StatusControls shipmentId={shipment.id} status={shipment.status} />
+          <DriverDialog
+            shipmentId={shipment.id}
+            driverName={shipment.driver?.name ?? null}
+            driverPhone={shipment.driver?.phone ?? null}
+            verified={shipment.driver?.verificationStatus === "VERIFIED"}
+          />
           <AlertsDialog
             shipmentId={shipment.id}
             initialOpenCount={shipment.alerts.filter((alert) => !alert.resolved).length}
@@ -199,12 +213,13 @@ export default async function ShipmentDetailPage({
                   <TableHead>Appointment</TableHead>
                   <TableHead>Actual arrival</TableHead>
                   <TableHead>POD signed by</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {shipment.stops.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-muted-foreground">
+                    <TableCell colSpan={10} className="text-center text-muted-foreground">
                       No stops on this shipment.
                     </TableCell>
                   </TableRow>
@@ -240,6 +255,16 @@ export default async function ShipmentDetailPage({
                         {formatDateTime(stop.actualArrivalAt)}
                       </TableCell>
                       <TableCell>{formatText(stop.podSignedBy)}</TableCell>
+                      <TableCell className="text-right">
+                        <StopControls
+                          shipmentId={shipment.id}
+                          stopId={stop.id}
+                          stopType={stop.type}
+                          hasArrived={stop.actualArrivalAt !== null}
+                          hasDeparted={stop.actualDepartureAt !== null}
+                          canSync={stop.taiShipmentStopId !== null}
+                        />
+                      </TableCell>
                     </TableRow>
                   ))
                 )}
@@ -410,5 +435,6 @@ export default async function ShipmentDetailPage({
         </CardContent>
       </Card>
     </main>
+    </LifecycleFeedback>
   );
 }

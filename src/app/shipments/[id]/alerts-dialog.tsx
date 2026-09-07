@@ -5,8 +5,10 @@ import { useRef, useState, useTransition } from "react";
 import {
   createAlertAction,
   fetchAlerts,
+  fetchAlertTypes,
   resolveAlertAction,
   type AlertsState,
+  type AlertTypesState,
 } from "./alert-actions";
 
 import { Badge } from "@/components/ui/badge";
@@ -19,11 +21,16 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { formatDateTime } from "@/lib/format";
-import { SUGGESTED_ALERT_TYPES } from "@/lib/tai/alert-types";
 import type { AlertListItem } from "@/lib/tai/alerts";
 
 function SyncBadge({ alert }: { alert: AlertListItem }) {
@@ -97,6 +104,8 @@ export function AlertsDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<AlertsState | null>(null);
+  const [types, setTypes] = useState<AlertTypesState | null>(null);
+  const [selectedType, setSelectedType] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const [busyKind, setBusyKind] = useState<"load" | "create" | "resolve" | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -123,14 +132,25 @@ export function AlertsDialog({
 
   function handleOpenChange(next: boolean) {
     setOpen(next);
-    if (next) {
-      run("load", () => fetchAlerts(shipmentId));
-    }
+    if (!next) return;
+
+    run("load", () => fetchAlerts(shipmentId));
+    startTransition(async () => {
+      setTypes(await fetchAlertTypes());
+    });
   }
 
   const alerts = state?.alerts ?? [];
   const openAlerts = alerts.filter((alert) => !alert.resolved);
   const busy = pending;
+
+  const typeOptions = types?.options ?? [];
+  const typesPlaceholder =
+    types === null
+      ? "Loading types…"
+      : typeOptions.length === 0
+        ? "No alert types available"
+        : "Select an alert type";
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -161,35 +181,52 @@ export function AlertsDialog({
           action={(formData) => {
             run("create", async () => {
               const result = await createAlertAction(formData);
-              if (!result.error) formRef.current?.reset();
+              if (!result.error) {
+                formRef.current?.reset();
+                setSelectedType(null);
+              }
               return result;
             });
           }}
           className="space-y-2"
         >
           <input type="hidden" name="shipmentId" value={shipmentId} />
-          <Label htmlFor="alertType">New alert</Label>
+          {/* The value TAI expects is the type name itself, so the option value
+              and its label are the same string. */}
+          <input type="hidden" name="alertType" value={selectedType ?? ""} />
+
+          <Label htmlFor="alertType-trigger">New alert</Label>
           <div className="flex gap-2">
-            <Input
-              id="alertType"
-              name="alertType"
-              list="alert-type-suggestions"
-              placeholder="e.g. Seal Broken"
-              required
-              disabled={busy}
-              className="h-9"
-            />
-            <Button type="submit" size="lg" disabled={busy}>
+            <Select
+              value={selectedType}
+              onValueChange={(value) => setSelectedType(value as string | null)}
+            >
+              <SelectTrigger
+                id="alertType-trigger"
+                className="h-9 flex-1"
+                disabled={busy || typeOptions.length === 0}
+              >
+                <SelectValue placeholder={typesPlaceholder} />
+              </SelectTrigger>
+              <SelectContent>
+                {typeOptions.map((option) => (
+                  <SelectItem key={option.name} value={option.name}>
+                    {option.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Button type="submit" size="lg" disabled={busy || !selectedType}>
               {busyKind === "create" ? "Raising…" : "Raise"}
             </Button>
           </div>
-          {/* Suggestions, not a closed list — TAI has not published the accepted
-              values yet (findings §9), so free text stays possible. */}
-          <datalist id="alert-type-suggestions">
-            {SUGGESTED_ALERT_TYPES.map((type) => (
-              <option key={type} value={type} />
-            ))}
-          </datalist>
+
+          {types?.error ? (
+            <p className="text-xs text-destructive">
+              Could not load alert types from TAI: {types.error}
+            </p>
+          ) : null}
         </form>
 
         {state?.error ? (

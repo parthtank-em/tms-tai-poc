@@ -300,7 +300,8 @@ model ShipmentEvent {
 
   createdAt DateTime @default(now()) @map("created_at")
 
-  apiCalls TaiApiCall[]
+  apiCalls     TaiApiCall[]
+  outboundJobs OutboundJob[]
 
   @@index([shipmentId, occurredAt])
   @@index([type, occurredAt])
@@ -429,6 +430,12 @@ model OutboundJob {
   alertId String?        @map("alert_id")
   alert   ShipmentAlert? @relation(fields: [alertId], references: [id], onDelete: SetNull)
 
+  /// The lifecycle event this job carries outward. Without it a succeeded job
+  /// could only settle "some pending event on this shipment", which is wrong as
+  /// soon as two events are in flight at once.
+  eventId String?        @map("event_id")
+  event   ShipmentEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
   /// Request body to send, built when the job is enqueued.
   payload Json
 
@@ -450,6 +457,7 @@ model OutboundJob {
   @@index([status, nextAttemptAt])
   @@index([shipmentId, status])
   @@index([alertId])
+  @@index([eventId])
   @@map("outbound_jobs")
 }
 

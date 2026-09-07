@@ -62,7 +62,7 @@ src/
       session.ts                   # signed session cookie
       guard.ts                     # getSession / requireSession
     tai/
-      alert-types.ts               # suggested alert vocabulary (unconfirmed)
+      alert-types.ts               # alert vocabulary fetched from TAI, cached
       alerts.ts                    # raise / resolve / list — use case 4
       api-client.ts                # TAI Public REST API (x-api-key) + audit log
       outbound-worker.ts           # job queue drain, backoff, dead-lettering
@@ -231,12 +231,22 @@ section numbers.
 - **Inbound webhook payload field names are guesses.** The findings doc pins down the transport but not the
   body schema, so `src/lib/tai/payload.ts` reads each field through a list of plausible aliases. Confirm
   against a real TAI capture and prune.
-- **`TAI_API_KEY` is not set**, so no alert has ever actually reached TAI. The whole outbound path was
-  verified against a dead endpoint instead: alerts are recorded and queued correctly, and failures are
-  retried or dead-lettered as designed, but the request/response shape is unproven against the real API.
-- **The alert-type vocabulary is invented.** `src/lib/tai/alert-types.ts` holds placeholder suggestions;
-  the accepted `shipmentAlerts` values are an open question (§9 of the findings). The column is free text
-  and the form accepts free text, so nothing breaks — but nothing is validated either.
+- **Two candidate API hosts.** The alert endpoints are transcribed from TAI's OpenAPI definition, whose
+  `servers` entry is the **beta** host `https://www.taibeta.net` — now the client default. The findings
+  doc §4 names production (`https://www.taicloud.net`). Set `TAI_API_BASE_URL` explicitly so it is
+  obvious which environment is being written to.
+- **Alert types now come from TAI** via `GET /PublicApi/Broker/v2/Alerts` ("Get Shipment Alert Type"),
+  cached in-process for 5 minutes. There is deliberately no local fallback list: resolving matches on the
+  type *name*, so an invented value would raise an alert that could never be cleared through the API. If
+  TAI is unreachable and nothing is cached, the dropdown is empty and raising is blocked rather than
+  guessed at.
+- **The alert-type query filters are unused.** `isManual` and `displayInFrontOffice` are both left unset,
+  so every configured type is offered. `isManual=true` is the likely refinement for an operator-raised
+  alert, once TAI confirms what the flag means.
+- **Use case 3's endpoints are still inferred.** Only the two alert endpoints have been checked against
+  TAI's published spec. `PUT /Tracking`, `PUT /Tracking/{shipmentStopId}` and
+  `POST /ShipmentActivityLogs` — including the delivery-stop field names — come from the findings doc
+  alone.
 - **Nothing schedules the outbound queue.** `POST /api/jobs/outbound/run` drains it and raising an alert
   kicks it once via `after()`, but a job that fails its first attempt only retries when something calls
   that endpoint. It is also session-guarded, so a cron needs a credential that does not exist yet.

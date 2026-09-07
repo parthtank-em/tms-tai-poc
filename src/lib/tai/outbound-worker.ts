@@ -1,21 +1,38 @@
 import { randomUUID } from "node:crypto";
 
-import { createAlerts, resolveAlerts, type AlertRequest, type TaiAlert } from "./api-client";
+import {
+  asAlerts,
+  createActivityLog,
+  createAlerts,
+  resolveAlerts,
+  updateStopTracking,
+  updateTracking,
+  type CallContext,
+  type PublicApiAddShipmentAlert,
+  type PublicApiShipmentAlert,
+  type TaiCallResult,
+} from "./api-client";
 
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /**
- * Drains the outbound job queue (findings §4.1).
+ * Drains the outbound job queue (findings §4.1, §4.2).
  *
  * Inbound webhooks are at-most-once and TAI owns delivery; outbound is the
- * mirror image — **FreightID owns reliability here**. A TAI outage must delay an
- * alert, never drop it, so nothing is pushed except through an `outbound_jobs`
+ * mirror image — **FreightID owns reliability here**. A TAI outage must delay a
+ * push, never drop it, so nothing goes to TAI except through an `outbound_jobs`
  * row that survives restarts and is retried with backoff.
  */
 
 export const ALERTS_CREATE = "ALERTS_CREATE";
 export const ALERTS_RESOLVE = "ALERTS_RESOLVE";
+export const TRACKING_UPDATE = "TRACKING_UPDATE";
+export const STOP_TRACKING_UPDATE = "STOP_TRACKING_UPDATE";
+export const ACTIVITY_LOG_CREATE = "ACTIVITY_LOG_CREATE";
+
+/** Payload shape for STOP_TRACKING_UPDATE — the id rides in the URL, not the body. */
+export type StopTrackingPayload = { shipmentStopId: number; body: Record<string, unknown> };
 
 /** 30s, 1m, 2m, 4m … capped at an hour. */
 function backoffMs(attempt: number): number {
@@ -29,6 +46,7 @@ type ClaimedJob = {
   id: string;
   operation: string;
   alertId: string | null;
+  eventId: string | null;
   shipmentId: string | null;
   payload: Prisma.JsonValue;
   attemptCount: number;
@@ -42,7 +60,6 @@ type ClaimedJob = {
 async function claimNextJob(workerId: string): Promise<ClaimedJob | null> {
   const candidate = await prisma.outboundJob.findFirst({
     where: {
-      status: { in: ["PENDING", "IN_FLIGHT"] },
       nextAttemptAt: { lte: new Date() },
       OR: [
         { status: "PENDING" },
@@ -74,6 +91,7 @@ async function claimNextJob(workerId: string): Promise<ClaimedJob | null> {
       id: true,
       operation: true,
       alertId: true,
+      eventId: true,
       shipmentId: true,
       payload: true,
       attemptCount: true,
@@ -83,7 +101,7 @@ async function claimNextJob(workerId: string): Promise<ClaimedJob | null> {
 }
 
 /** Copies whatever TAI returned onto the local alert row. */
-async function applyTaiResponse(alertId: string, alertType: string, alerts: TaiAlert[]) {
+async function applyAlertResponse(alertId: string, alertType: string, alerts: PublicApiShipmentAlert[]) {
   const match =
     alerts.find((alert) => alert.type?.toLowerCase() === alertType.toLowerCase()) ?? alerts[0];
 
@@ -106,18 +124,58 @@ async function applyTaiResponse(alertId: string, alertType: string, alerts: TaiA
   });
 }
 
-async function runJob(job: ClaimedJob): Promise<void> {
-  const payload = job.payload as unknown as AlertRequest;
-  const context = { jobId: job.id, shipmentId: job.shipmentId ?? undefined, attempt: job.attemptCount };
+async function dispatch(job: ClaimedJob, context: CallContext): Promise<TaiCallResult> {
+  switch (job.operation) {
+    case ALERTS_CREATE:
+      return createAlerts(job.payload as unknown as PublicApiAddShipmentAlert, context);
 
-  const result =
-    job.operation === ALERTS_RESOLVE
-      ? await resolveAlerts(payload, context)
-      : await createAlerts(payload, context);
+    case ALERTS_RESOLVE:
+      return resolveAlerts(job.payload as unknown as PublicApiAddShipmentAlert, context);
+
+    case TRACKING_UPDATE:
+      return updateTracking(job.payload, context);
+
+    case STOP_TRACKING_UPDATE: {
+      const payload = job.payload as unknown as StopTrackingPayload;
+      return updateStopTracking(payload.shipmentStopId, payload.body, context);
+    }
+
+    case ACTIVITY_LOG_CREATE:
+      return createActivityLog(job.payload, context);
+
+    default:
+      return {
+        ok: false,
+        status: null,
+        error: `Unknown outbound operation "${job.operation}".`,
+        retryable: false,
+      };
+  }
+}
+
+/** Settles exactly the event this job carried — never any other in flight. */
+async function settleEvent(
+  eventId: string | null,
+  data: Prisma.ShipmentEventUncheckedUpdateInput,
+) {
+  if (!eventId) return;
+  await prisma.shipmentEvent.update({ where: { id: eventId }, data });
+}
+
+async function runJob(job: ClaimedJob): Promise<void> {
+  const context: CallContext = {
+    jobId: job.id,
+    shipmentId: job.shipmentId ?? undefined,
+    eventId: job.eventId ?? undefined,
+    attempt: job.attemptCount,
+  };
+
+  const result = await dispatch(job, context);
 
   if (result.ok) {
-    if (job.alertId) {
-      await applyTaiResponse(job.alertId, payload.shipmentAlerts[0] ?? "", result.alerts);
+    if (job.alertId && (job.operation === ALERTS_CREATE || job.operation === ALERTS_RESOLVE)) {
+      const payload = job.payload as unknown as PublicApiAddShipmentAlert;
+      await applyAlertResponse(job.alertId, payload.shipmentAlerts?.[0] ?? "", asAlerts(result.data));
     }
 
     await prisma.outboundJob.update({
@@ -131,13 +189,11 @@ async function runJob(job: ClaimedJob): Promise<void> {
       },
     });
 
-    // Mark the originating event as synced.
-    if (job.alertId) {
-      await prisma.shipmentEvent.updateMany({
-        where: { shipmentId: job.shipmentId ?? undefined, taiSyncStatus: "PENDING" },
-        data: { taiSyncStatus: "SYNCED", taiSyncedAt: new Date(), taiSyncError: null },
-      });
-    }
+    await settleEvent(job.eventId, {
+      taiSyncStatus: "SYNCED",
+      taiSyncedAt: new Date(),
+      taiSyncError: null,
+    });
     return;
   }
 
@@ -147,7 +203,7 @@ async function runJob(job: ClaimedJob): Promise<void> {
     where: { id: job.id },
     data: {
       // DEAD_LETTER means a human has to look. It stops the retry loop without
-      // pretending the alert reached TAI.
+      // pretending the push reached TAI.
       status: exhausted ? "DEAD_LETTER" : "PENDING",
       nextAttemptAt: exhausted ? new Date() : new Date(Date.now() + backoffMs(job.attemptCount)),
       lockedAt: null,
@@ -157,11 +213,8 @@ async function runJob(job: ClaimedJob): Promise<void> {
     },
   });
 
-  if (exhausted && job.shipmentId) {
-    await prisma.shipmentEvent.updateMany({
-      where: { shipmentId: job.shipmentId, taiSyncStatus: "PENDING" },
-      data: { taiSyncStatus: "FAILED", taiSyncError: result.error },
-    });
+  if (exhausted) {
+    await settleEvent(job.eventId, { taiSyncStatus: "FAILED", taiSyncError: result.error });
   }
 }
 

@@ -1,7 +1,11 @@
-import { normalizeAlertType } from "./alert-types";
+import { isKnownAlertType, normalizeAlertType } from "./alert-types";
+import {
+  isValidTaiShipmentId,
+  type PublicApiAddShipmentAlert,
+  type PublicApiResolveShipmentAlert,
+} from "./api-client";
 import { ALERTS_CREATE, ALERTS_RESOLVE } from "./outbound-worker";
 
-import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -95,10 +99,17 @@ export async function raiseAlert(
     return { ok: false, error: "Shipment not found." };
   }
 
-  if (shipment.taiShipmentId === null) {
-    // Every outbound call is addressed by TAI's integer id. Without it there is
-    // nothing to send, so refuse rather than queue a job that can never succeed.
-    return { ok: false, error: "This shipment has no TAI shipment ID, so an alert cannot be sent." };
+  if (!isValidTaiShipmentId(shipment.taiShipmentId)) {
+    // The spec types shipmentId as a required int32 >= 1. Without a usable one
+    // there is nothing to send, so refuse rather than queue a doomed job.
+    return { ok: false, error: "This shipment has no usable TAI shipment ID, so an alert cannot be sent." };
+  }
+
+  // The dropdown only offers values TAI gave us; this catches a hand-crafted
+  // request. `null` means we have no list to check against, in which case we
+  // let it through rather than blocking on TAI being reachable.
+  if (isKnownAlertType(alertType) === false) {
+    return { ok: false, error: `"${alertType}" is not one of TAI's configured alert types.` };
   }
 
   const existing = await prisma.shipmentAlert.findFirst({
@@ -110,14 +121,26 @@ export async function raiseAlert(
     return { ok: false, error: `An open "${alertType}" alert already exists on this shipment.` };
   }
 
-  const payload = {
+  const payload: PublicApiAddShipmentAlert = {
     shipmentId: shipment.taiShipmentId,
     shipmentAlerts: [alertType],
-  } satisfies Prisma.InputJsonValue & { shipmentId: number; shipmentAlerts: string[] };
+  };
 
   const alert = await prisma.$transaction(async (tx) => {
     const created = await tx.shipmentAlert.create({
       data: { shipmentId, alertType, resolved: false },
+      select: { id: true },
+    });
+
+    const event = await tx.shipmentEvent.create({
+      data: {
+        shipmentId,
+        type: "SECURITY_ALERT_RAISED",
+        source: "FREIGHTID_INTERNAL",
+        occurredAt: new Date(),
+        taiSyncStatus: "PENDING",
+        details: { alertType, localAlertId: created.id },
+      },
       select: { id: true },
     });
 
@@ -128,18 +151,8 @@ export async function raiseAlert(
         alertAction: "CREATE",
         alertTypes: [alertType],
         alertId: created.id,
+        eventId: event.id,
         payload,
-      },
-    });
-
-    await tx.shipmentEvent.create({
-      data: {
-        shipmentId,
-        type: "SECURITY_ALERT_RAISED",
-        source: "FREIGHTID_INTERNAL",
-        occurredAt: new Date(),
-        taiSyncStatus: "PENDING",
-        details: { alertType, localAlertId: created.id },
       },
     });
 
@@ -167,14 +180,16 @@ export async function resolveAlert(
   }
 
   const shipment = await loadShipment(shipmentId);
-  if (!shipment?.taiShipmentId) {
-    return { ok: false, error: "This shipment has no TAI shipment ID, so it cannot be resolved." };
+  if (!isValidTaiShipmentId(shipment?.taiShipmentId)) {
+    return { ok: false, error: "This shipment has no usable TAI shipment ID, so it cannot be resolved." };
   }
 
-  const payload = {
+  // "Resolve an existing shipment alert by shipment id and alert type" — the
+  // spec identifies the alert by type, not by alertId.
+  const payload: PublicApiResolveShipmentAlert = {
     shipmentId: shipment.taiShipmentId,
     shipmentAlerts: [alert.alertType],
-  } satisfies Prisma.InputJsonValue & { shipmentId: number; shipmentAlerts: string[] };
+  };
 
   await prisma.$transaction(async (tx) => {
     // Resolved locally straight away — the operator's judgement does not wait
@@ -184,18 +199,7 @@ export async function resolveAlert(
       data: { resolved: true, resolvedAt: new Date() },
     });
 
-    await tx.outboundJob.create({
-      data: {
-        shipmentId,
-        operation: ALERTS_RESOLVE,
-        alertAction: "RESOLVE",
-        alertTypes: [alert.alertType],
-        alertId: alert.id,
-        payload,
-      },
-    });
-
-    await tx.shipmentEvent.create({
+    const event = await tx.shipmentEvent.create({
       data: {
         shipmentId,
         type: "SECURITY_ALERT_RESOLVED",
@@ -203,6 +207,19 @@ export async function resolveAlert(
         occurredAt: new Date(),
         taiSyncStatus: "PENDING",
         details: { alertType: alert.alertType, localAlertId: alert.id },
+      },
+      select: { id: true },
+    });
+
+    await tx.outboundJob.create({
+      data: {
+        shipmentId,
+        operation: ALERTS_RESOLVE,
+        alertAction: "RESOLVE",
+        alertTypes: [alert.alertType],
+        alertId: alert.id,
+        eventId: event.id,
+        payload,
       },
     });
   });

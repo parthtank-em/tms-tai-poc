@@ -135,7 +135,8 @@ async function call(
 
   if (!apiKey) {
     // Not retryable: no amount of waiting produces a credential.
-    const error = "TAI_API_KEY is not set — cannot call the TAI Public API.";
+    // Kept technical in the log; the UI never shows a raw job error.
+    const error = "TAI API credential is not configured.";
     await log({ error });
     return { ok: false, status: null, error, retryable: false };
   }
@@ -424,7 +425,7 @@ export async function updateTracking(
     return {
       ok: false,
       status: null,
-      error: `shipmentId must be an int32 between 1 and ${INT32_MAX}; got ${String(body.shipmentId)}.`,
+      error: `Invalid TAI shipment reference (${String(body.shipmentId)}).`,
       retryable: false,
     };
   }
@@ -457,7 +458,7 @@ export async function updateStopTracking(
     return {
       ok: false,
       status: null,
-      error: `shipmentStopId must be an int32 between 1 and ${INT32_MAX}; got ${String(shipmentStopId)}.`,
+      error: `Invalid TAI stop reference (${String(shipmentStopId)}).`,
       retryable: false,
     };
   }

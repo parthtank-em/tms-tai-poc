@@ -35,18 +35,14 @@ import type { AlertListItem } from "@/lib/tai/alerts";
 
 function SyncBadge({ alert }: { alert: AlertListItem }) {
   if (alert.syncStatus === "SYNCED") {
-    return (
-      <Badge variant="secondary">
-        Synced{alert.taiAlertId === null ? "" : ` · TAI #${alert.taiAlertId}`}
-      </Badge>
-    );
+    return <Badge variant="secondary">Sent to TAI</Badge>;
   }
 
   if (alert.syncStatus === "FAILED") {
-    return <Badge variant="destructive">Not sent to TAI</Badge>;
+    return <Badge variant="destructive">Not sent</Badge>;
   }
 
-  return <Badge variant="outline">Queued for TAI</Badge>;
+  return <Badge variant="outline">Sending…</Badge>;
 }
 
 function AlertRow({
@@ -74,11 +70,14 @@ function AlertRow({
         <p className="text-xs text-muted-foreground">
           Raised {formatDateTime(alert.createdAt)}
           {alert.resolvedAt ? ` · resolved ${formatDateTime(alert.resolvedAt)}` : ""}
-          {alert.taiShipmentStopId === null ? "" : ` · TAI stop ${alert.taiShipmentStopId}`}
         </p>
 
-        {alert.syncError ? (
-          <p className="text-xs break-words text-destructive">{alert.syncError}</p>
+        {/* The badge says whether it reached TAI. The underlying job error is
+            technical, so it stays in the log rather than on screen. */}
+        {alert.syncStatus === "FAILED" ? (
+          <p className="text-xs text-destructive">
+            Could not be sent to TAI. It stays recorded here and will be retried.
+          </p>
         ) : null}
       </div>
 
@@ -171,8 +170,7 @@ export function AlertsDialog({
         <DialogHeader>
           <DialogTitle>Security alerts</DialogTitle>
           <DialogDescription>
-            Raised in FreightID, then pushed to TAI. An alert is recorded here first, so a TAI outage
-            delays it rather than losing it.
+            Security alerts and exceptions for this shipment. Each one is sent on to TAI.
           </DialogDescription>
         </DialogHeader>
 
@@ -224,7 +222,7 @@ export function AlertsDialog({
 
           {types?.error ? (
             <p className="text-xs text-destructive">
-              Could not load alert types from TAI: {types.error}
+              Alert types are unavailable right now. Try again in a moment.
             </p>
           ) : null}
         </form>

@@ -1,5 +1,6 @@
 "use client";
 
+import { MoreHorizontalIcon } from "lucide-react";
 import { createContext, useContext, useState, useTransition, type ReactNode } from "react";
 
 import {
@@ -14,6 +15,12 @@ import {
 } from "./lifecycle-actions";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogClose,
@@ -182,7 +189,7 @@ export function StatusControls({
         type="submit"
         size="sm"
         disabled={pending || !next || next === status}
-        title="PUT /Tracking · trackingUpdate.shipmentStatus"
+        title="Update the shipment status"
       >
         Update
       </Button>
@@ -211,42 +218,78 @@ export function StopControls({
   windowStart: string | null;
   windowEnd: string | null;
 }) {
-  const blocked = canSync ? undefined : "No TAI stop ID on this stop yet";
+  const { pending, run } = useFeedback();
+
+  // The dialogs live here rather than inside menu items: the menu closes on
+  // select, which would unmount a dialog nested inside it.
+  const [podOpen, setPodOpen] = useState(false);
+  const [apptOpen, setApptOpen] = useState(false);
+
+  /** The simple actions need no form — just the two ids. */
+  function submit(action: (formData: FormData) => Promise<ActionState>) {
+    const formData = new FormData();
+    formData.set("shipmentId", shipmentId);
+    formData.set("stopId", stopId);
+    run(() => action(formData));
+  }
 
   return (
-    <div className="flex flex-wrap justify-end gap-1.5">
-      <ActionButton
-        fields={{ shipmentId, stopId }}
-        action={stopArrivalAction}
-        disabled={hasArrived || !canSync}
-        title={blocked ?? "PUT /Tracking/{shipmentStopId}"}
-      >
-        Arrived
-      </ActionButton>
+    <div className="flex justify-end">
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={pending || !canSync}
+              aria-label="Stop actions"
+              title={canSync ? "Stop actions" : "This stop is not ready to update yet"}
+            >
+              <MoreHorizontalIcon />
+            </Button>
+          }
+        />
 
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem disabled={hasArrived} onClick={() => submit(stopArrivalAction)}>
+            Record arrival
+          </DropdownMenuItem>
+
+          {isPickup ? (
+            <DropdownMenuItem
+              disabled={!hasArrived || hasDeparted}
+              onClick={() => submit(stopDepartureAction)}
+            >
+              Record departure
+            </DropdownMenuItem>
+          ) : null}
+
+          {isDelivery ? (
+            <DropdownMenuItem onClick={() => setPodOpen(true)}>
+              Capture proof of delivery
+            </DropdownMenuItem>
+          ) : null}
+
+          <DropdownMenuItem onClick={() => setApptOpen(true)}>
+            Set appointment window
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <PodDialog
+        shipmentId={shipmentId}
+        stopId={stopId}
+        open={podOpen}
+        onOpenChange={setPodOpen}
+      />
       <AppointmentDialog
         shipmentId={shipmentId}
         stopId={stopId}
-        canSync={canSync}
+        open={apptOpen}
+        onOpenChange={setApptOpen}
         windowStart={windowStart}
         windowEnd={windowEnd}
       />
-
-      {/* A BOTH stop collects and drops, so it gets both actions. */}
-      {isPickup ? (
-        <ActionButton
-          fields={{ shipmentId, stopId }}
-          action={stopDepartureAction}
-          disabled={!hasArrived || hasDeparted || !canSync}
-          title={blocked ?? "PUT /Tracking/{shipmentStopId}"}
-        >
-          Departed
-        </ActionButton>
-      ) : null}
-
-      {isDelivery ? (
-        <PodDialog shipmentId={shipmentId} stopId={stopId} canSync={canSync} />
-      ) : null}
     </div>
   );
 }
@@ -254,38 +297,29 @@ export function StopControls({
 function PodDialog({
   shipmentId,
   stopId,
-  canSync,
+  open,
+  onOpenChange,
 }: {
   shipmentId: string;
   stopId: string;
-  canSync: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
   const { pending, run } = useFeedback();
-  const [open, setOpen] = useState(false);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger
-        render={
-          <Button size="sm" variant="outline" disabled={pending || !canSync}>
-            POD
-          </Button>
-        }
-      />
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Capture proof of delivery</DialogTitle>
-          <DialogDescription>
-            Records the signature locally and pushes it to TAI as
-            <code className="mx-1 text-xs">proofOfDeliverySignedBy</code>.
-          </DialogDescription>
+          <DialogDescription>Who signed for this delivery?</DialogDescription>
         </DialogHeader>
 
         <form
           action={(formData) => {
             run(async () => {
               const result = await capturePodAction(formData);
-              if (!result.error) setOpen(false);
+              if (!result.error) onOpenChange(false);
               return result;
             });
           }}
@@ -316,34 +350,27 @@ function PodDialog({
 function AppointmentDialog({
   shipmentId,
   stopId,
-  canSync,
+  open,
+  onOpenChange,
   windowStart,
   windowEnd,
 }: {
   shipmentId: string;
   stopId: string;
-  canSync: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   windowStart: string | null;
   windowEnd: string | null;
 }) {
   const { pending, run } = useFeedback();
-  const [open, setOpen] = useState(false);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger
-        render={
-          <Button size="sm" variant="ghost" disabled={pending || !canSync}>
-            Appt
-          </Button>
-        }
-      />
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Appointment window</DialogTitle>
           <DialogDescription>
-            Sent to TAI as the pickup or delivery appointment pair, chosen from this stop&apos;s type.
-            Times are UTC.
+            The scheduled window for this stop. All times are UTC.
           </DialogDescription>
         </DialogHeader>
 
@@ -351,7 +378,7 @@ function AppointmentDialog({
           action={(formData) => {
             run(async () => {
               const result = await updateAppointmentAction(formData);
-              if (!result.error) setOpen(false);
+              if (!result.error) onOpenChange(false);
               return result;
             });
           }}
@@ -424,9 +451,7 @@ export function DriverDialog({
         <DialogHeader>
           <DialogTitle>Driver</DialogTitle>
           <DialogDescription>
-            Assignment is recorded in FreightID only. TAI models drivers as shipment reference
-            numbers and the write path is unconfirmed, so this is deliberately not pushed (§5).
-            Identity verification is separate — that one does go to TAI.
+            The driver assigned to this shipment. Verifying their identity is a separate step.
           </DialogDescription>
         </DialogHeader>
 
@@ -470,7 +495,7 @@ export function DriverDialog({
             action={verifyDriverAction}
             disabled={!driverName || verified}
             variant="secondary"
-            title="POST /ShipmentActivityLogs"
+            title="Record that the driver's identity was verified"
           >
             {verified ? "Identity verified" : "Verify identity"}
           </ActionButton>

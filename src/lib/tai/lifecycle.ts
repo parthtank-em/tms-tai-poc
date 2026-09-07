@@ -183,7 +183,7 @@ export async function verifyDriverIdentity(shipmentId: string): Promise<Lifecycl
   if (!shipment) return { ok: false, error: "Shipment not found." };
   if (!shipment.driver) return { ok: false, error: "Assign a driver before verifying identity." };
   if (shipment.taiShipmentId === null) {
-    return { ok: false, error: "This shipment has no TAI shipment ID, so nothing can be synced." };
+    return { ok: false, error: "This shipment is not linked to TAI yet, so it cannot be updated." };
   }
 
   const occurredAt = new Date();
@@ -232,11 +232,11 @@ export async function recordStopArrival(
 
   const stop = await loadStop(shipmentId, stopId);
   if (!stop) return { ok: false, error: "Stop not found." };
-  if (stop.actualArrivalAt) return { ok: false, error: "Arrival is already recorded on this stop." };
+  if (stop.actualArrivalAt) return { ok: false, error: "Arrival has already been recorded here." };
   if (stop.taiShipmentStopId === null) {
     // §4.2's stop endpoint is addressed by TAI's stop id. Without it there is
     // no URL to call.
-    return { ok: false, error: "This stop has no TAI stop ID, so it cannot be synced." };
+    return { ok: false, error: "This stop is not linked to TAI yet, so it cannot be updated." };
   }
 
   const occurredAt = new Date();
@@ -277,13 +277,13 @@ export async function recordStopDeparture(
   const stop = await loadStop(shipmentId, stopId);
   if (!stop) return { ok: false, error: "Stop not found." };
   if (!stop.actualArrivalAt) {
-    return { ok: false, error: "Record arrival at this stop before departure." };
+    return { ok: false, error: "Record arrival here before departure." };
   }
   if (stop.actualDepartureAt) {
-    return { ok: false, error: "Departure is already recorded on this stop." };
+    return { ok: false, error: "Departure has already been recorded here." };
   }
   if (stop.taiShipmentStopId === null) {
-    return { ok: false, error: "This stop has no TAI stop ID, so it cannot be synced." };
+    return { ok: false, error: "This stop is not linked to TAI yet, so it cannot be updated." };
   }
 
   const occurredAt = new Date();
@@ -331,7 +331,7 @@ export async function capturePod(
   const stop = await loadStop(shipmentId, stopId);
   if (!stop) return { ok: false, error: "Stop not found." };
   if (stop.taiShipmentStopId === null) {
-    return { ok: false, error: "This stop has no TAI stop ID, so it cannot be synced." };
+    return { ok: false, error: "This stop is not linked to TAI yet, so it cannot be updated." };
   }
 
   const occurredAt = new Date();
@@ -404,7 +404,7 @@ export async function updateStopAppointment(
   const stop = await loadStop(shipmentId, stopId);
   if (!stop) return { ok: false, error: "Stop not found." };
   if (stop.taiShipmentStopId === null) {
-    return { ok: false, error: "This stop has no TAI stop ID, so it cannot be synced." };
+    return { ok: false, error: "This stop is not linked to TAI yet, so it cannot be updated." };
   }
 
   const occurredAt = new Date();
@@ -476,12 +476,12 @@ export async function setShipmentStatus(
   if (!shipment) return { ok: false, error: "Shipment not found." };
 
   const label = TAI_STATUS_LABEL[status];
-  if (!label) return { ok: false, error: `Unsupported status "${String(status)}".` };
+  if (!label) return { ok: false, error: "That status is not available." };
   if (shipment.status === status) {
     return { ok: false, error: `Shipment is already ${label}.` };
   }
   if (shipment.taiShipmentId === null) {
-    return { ok: false, error: "This shipment has no TAI shipment ID, so nothing can be synced." };
+    return { ok: false, error: "This shipment is not linked to TAI yet, so it cannot be updated." };
   }
 
   const occurredAt = new Date();

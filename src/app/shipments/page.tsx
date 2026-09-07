@@ -24,7 +24,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Shipments · FreightID",
-  description: "Shipments synchronized from TAI.",
+  description: "All shipments.",
 };
 
 type StopDates = {
@@ -109,7 +109,7 @@ export default async function ShipmentsPage() {
           <CardHeader>
             <CardTitle>No shipments yet</CardTitle>
             <CardDescription>
-              Shipments appear here as soon as TAI sends them through.
+              Shipments will appear here once they arrive from TAI.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -121,7 +121,9 @@ export default async function ShipmentsPage() {
     <main className="mx-auto w-full max-w-7xl px-6 py-10">
       <header className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Shipments</h1>
-        <p className="text-sm text-muted-foreground">{shipments.length} synchronized from TAI</p>
+        <p className="text-sm text-muted-foreground">
+          {shipments.length} {shipments.length === 1 ? "shipment" : "shipments"}
+        </p>
       </header>
 
       <Card className="overflow-hidden p-0">

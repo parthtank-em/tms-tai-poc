@@ -55,7 +55,7 @@ export async function assignDriverAction(formData: FormData): Promise<ActionStat
   const name = String(formData.get("driverName") ?? "");
   const phone = String(formData.get("driverPhone") ?? "");
 
-  return run(shipmentId, "Driver assigned. Not sent to TAI — held pending §5.", () =>
+  return run(shipmentId, "Driver assigned.", () =>
     assignDriver(shipmentId, { name, phone }),
   );
 }
@@ -63,7 +63,7 @@ export async function assignDriverAction(formData: FormData): Promise<ActionStat
 export async function verifyDriverAction(formData: FormData): Promise<ActionState> {
   const shipmentId = String(formData.get("shipmentId") ?? "");
 
-  return run(shipmentId, "Identity verified and queued for TAI.", () =>
+  return run(shipmentId, "Driver identity verified.", () =>
     verifyDriverIdentity(shipmentId),
   );
 }
@@ -72,7 +72,7 @@ export async function stopArrivalAction(formData: FormData): Promise<ActionState
   const shipmentId = String(formData.get("shipmentId") ?? "");
   const stopId = String(formData.get("stopId") ?? "");
 
-  return run(shipmentId, "Arrival recorded and queued for TAI.", () =>
+  return run(shipmentId, "Arrival recorded.", () =>
     recordStopArrival(shipmentId, stopId),
   );
 }
@@ -81,7 +81,7 @@ export async function stopDepartureAction(formData: FormData): Promise<ActionSta
   const shipmentId = String(formData.get("shipmentId") ?? "");
   const stopId = String(formData.get("stopId") ?? "");
 
-  return run(shipmentId, "Departure recorded and queued for TAI.", () =>
+  return run(shipmentId, "Departure recorded.", () =>
     recordStopDeparture(shipmentId, stopId),
   );
 }
@@ -91,7 +91,7 @@ export async function capturePodAction(formData: FormData): Promise<ActionState>
   const stopId = String(formData.get("stopId") ?? "");
   const signedBy = String(formData.get("signedBy") ?? "");
 
-  return run(shipmentId, "POD captured and queued for TAI.", () =>
+  return run(shipmentId, "Proof of delivery saved.", () =>
     capturePod(shipmentId, stopId, signedBy),
   );
 }
@@ -115,10 +115,10 @@ export async function setStatusAction(formData: FormData): Promise<ActionState> 
   const status = String(formData.get("status") ?? "") as ShipmentStatus;
 
   if (!STATUSES.includes(status)) {
-    return { error: `Unsupported status "${status}".`, notice: null };
+    return { error: "That status is not available.", notice: null };
   }
 
-  return run(shipmentId, "Status updated and queued for TAI.", () =>
+  return run(shipmentId, "Status updated.", () =>
     setShipmentStatus(shipmentId, status),
   );
 }
@@ -129,7 +129,7 @@ export async function updateAppointmentAction(formData: FormData): Promise<Actio
   const begin = String(formData.get("appointmentBegin") ?? "");
   const end = String(formData.get("appointmentEnd") ?? "");
 
-  return run(shipmentId, "Appointment updated and queued for TAI.", () =>
+  return run(shipmentId, "Appointment updated.", () =>
     updateStopAppointment(shipmentId, stopId, { begin, end }),
   );
 }

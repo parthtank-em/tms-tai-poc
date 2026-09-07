@@ -102,14 +102,14 @@ export async function raiseAlert(
   if (!isValidTaiShipmentId(shipment.taiShipmentId)) {
     // The spec types shipmentId as a required int32 >= 1. Without a usable one
     // there is nothing to send, so refuse rather than queue a doomed job.
-    return { ok: false, error: "This shipment has no usable TAI shipment ID, so an alert cannot be sent." };
+    return { ok: false, error: "This shipment is not linked to TAI yet, so alerts cannot be raised." };
   }
 
   // The dropdown only offers values TAI gave us; this catches a hand-crafted
   // request. `null` means we have no list to check against, in which case we
   // let it through rather than blocking on TAI being reachable.
   if (isKnownAlertType(alertType) === false) {
-    return { ok: false, error: `"${alertType}" is not one of TAI's configured alert types.` };
+    return { ok: false, error: `"${alertType}" is not an available alert type.` };
   }
 
   const existing = await prisma.shipmentAlert.findFirst({
@@ -181,7 +181,7 @@ export async function resolveAlert(
 
   const shipment = await loadShipment(shipmentId);
   if (!isValidTaiShipmentId(shipment?.taiShipmentId)) {
-    return { ok: false, error: "This shipment has no usable TAI shipment ID, so it cannot be resolved." };
+    return { ok: false, error: "This shipment is not linked to TAI yet, so alerts cannot be resolved." };
   }
 
   // "Resolve an existing shipment alert by shipment id and alert type" — the

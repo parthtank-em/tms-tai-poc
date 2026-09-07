@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { AlertsDialog } from "./alerts-dialog";
+
 import {
   ProcessingStatusBadge,
   ShipmentStatusBadge,
@@ -80,6 +82,13 @@ export default async function ShipmentDetailPage({
           </span>
         ) : null}
         {shipment.loadHazmat ? <Badge variant="destructive">Hazmat</Badge> : null}
+
+        <div className="ml-auto">
+          <AlertsDialog
+            shipmentId={shipment.id}
+            initialOpenCount={shipment.alerts.filter((alert) => !alert.resolved).length}
+          />
+        </div>
       </header>
 
       <div className="grid gap-6 lg:grid-cols-2">

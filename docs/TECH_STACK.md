@@ -45,10 +45,13 @@ src/
     page.tsx                       # redirects to /shipments
     login/                         # /login — single-credential sign-in
     shipments/                     # /shipments + /shipments/[id] (auth required)
+      [id]/alerts-dialog.tsx           # Alerts modal — use case 4
+      [id]/alert-actions.ts            # server actions behind it
     api/webhooks/tai/              # inbound from TAI — use cases 1 & 2
       shipment-create/route.ts         # ShipmentCreateUrl
       shipment-detail-update/route.ts  # ShipmentDetailUpdateUrl
       shipment-status-update/route.ts  # ShipmentStatusUpdateUrl
+    api/jobs/outbound/run/route.ts # drains the retry queue — point a cron here
   components/ui/                   # shadcn components land here
     button.tsx
   lib/
@@ -59,6 +62,10 @@ src/
       session.ts                   # signed session cookie
       guard.ts                     # getSession / requireSession
     tai/
+      alert-types.ts               # suggested alert vocabulary (unconfirmed)
+      alerts.ts                    # raise / resolve / list — use case 4
+      api-client.ts                # TAI Public REST API (x-api-key) + audit log
+      outbound-worker.ts           # job queue drain, backoff, dead-lettering
       auth.ts                      # Authorization header check (Basic wins)
       status.ts                    # TAI status/stop labels -> enums
       payload.ts                   # webhook body -> normalized shape
@@ -224,8 +231,17 @@ section numbers.
 - **Inbound webhook payload field names are guesses.** The findings doc pins down the transport but not the
   body schema, so `src/lib/tai/payload.ts` reads each field through a list of plausible aliases. Confirm
   against a real TAI capture and prune.
-- **Use cases 3 and 4 are not built** — no outbound TAI REST client, no `OutboundJob` worker, no alert
-  service. `ShipmentLocationUpdateUrl` (optional, §3) has no route either.
+- **`TAI_API_KEY` is not set**, so no alert has ever actually reached TAI. The whole outbound path was
+  verified against a dead endpoint instead: alerts are recorded and queued correctly, and failures are
+  retried or dead-lettered as designed, but the request/response shape is unproven against the real API.
+- **The alert-type vocabulary is invented.** `src/lib/tai/alert-types.ts` holds placeholder suggestions;
+  the accepted `shipmentAlerts` values are an open question (§9 of the findings). The column is free text
+  and the form accepts free text, so nothing breaks — but nothing is validated either.
+- **Nothing schedules the outbound queue.** `POST /api/jobs/outbound/run` drains it and raising an alert
+  kicks it once via `after()`, but a job that fails its first attempt only retries when something calls
+  that endpoint. It is also session-guarded, so a cron needs a credential that does not exist yet.
+- **Use case 3 is not built** — no lifecycle state machine, no `Tracking` / `ShipmentActivityLogs` calls.
+  `ShipmentLocationUpdateUrl` (optional, §3) has no route either.
 - **Auth is single-credential and unthrottled** — see §6.
 
 ---

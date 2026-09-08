@@ -1,5 +1,6 @@
 import { getSession } from "@/lib/auth/guard";
 import { callbackClientIp } from "@/lib/jumio/callback-auth";
+import { consentLocationHint, resolveConsentLocation, toAlpha3 } from "@/lib/jumio/consent";
 import { startDriverVerification } from "@/lib/jumio/verification";
 
 /**
@@ -40,11 +41,31 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
+  // Jumio will not accept a consent record without a country, so this is
+  // resolved and checked before the transaction is created rather than being
+  // discovered as a 400 halfway through.
+  const explicitCountry = typeof body.country === "string" ? toAlpha3(body.country) : null;
+  const explicitState =
+    typeof body.state === "string" ? body.state.trim().toUpperCase() || null : null;
+
+  const location =
+    explicitCountry && (explicitCountry !== "USA" || explicitState)
+      ? { country: explicitCountry, state: explicitCountry === "USA" ? explicitState : null }
+      : resolveConsentLocation(request.headers);
+
+  if (!location) {
+    console.error(`[jumio] ${consentLocationHint()}`);
+    return Response.json(
+      { error: "Identity verification is not available right now.", retryable: false },
+      { status: 503 },
+    );
+  }
+
   const result = await startDriverVerification(driverId, {
     obtainedAt: new Date(),
     ip: callbackClientIp(request.headers),
-    country: typeof body.country === "string" ? body.country.trim() || null : null,
-    state: typeof body.state === "string" ? body.state.trim() || null : null,
+    country: location.country,
+    state: location.state,
   });
 
   if (!result.ok) {

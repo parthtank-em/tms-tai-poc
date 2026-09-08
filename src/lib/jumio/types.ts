@@ -22,10 +22,16 @@ export type JumioWorkflowStatus =
 /** `decision.type`. */
 export type JumioDecisionType = "PASSED" | "WARNING" | "REJECTED" | "NOT_EXECUTED";
 
-/** Consent block sent on account creation (§2.4). */
+/**
+ * Consent block sent on account creation (§2.4).
+ *
+ * `userIp` and `userLocation.country` are mandatory on Jumio's side, and
+ * `state` is mandatory when the country is `USA`. `country` is ISO 3166-1
+ * alpha-3.
+ */
 export type JumioUserConsent = {
   userIp?: string;
-  userLocation?: { country?: string; state?: string };
+  userLocation: { country: string; state?: string };
   consent: { obtained: "yes" | "no"; obtainedAt: string };
 };
 

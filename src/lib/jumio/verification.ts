@@ -45,8 +45,11 @@ const PROGRESS: Record<JumioVerificationStatus, number> = {
 
 export type ConsentInput = {
   obtainedAt: Date;
+  /** Jumio requires this. Null only when the platform gave us no client address. */
   ip: string | null;
-  country: string | null;
+  /** ISO 3166-1 alpha-3. Required by Jumio on every account call. */
+  country: string;
+  /** Required by Jumio when `country` is USA, meaningless elsewhere. */
   state: string | null;
 };
 
@@ -147,10 +150,12 @@ export async function startDriverVerification(
     },
     userConsent: {
       userIp: consent.ip ?? undefined,
-      userLocation:
-        consent.country || consent.state
-          ? { country: consent.country ?? undefined, state: consent.state ?? undefined }
-          : undefined,
+      // Always sent. Jumio rejects the whole call with a 400 when userLocation
+      // is missing, and the state half is mandatory for the USA.
+      userLocation: {
+        country: consent.country,
+        ...(consent.state ? { state: consent.state } : {}),
+      },
       consent: { obtained: "yes", obtainedAt: consent.obtainedAt.toISOString() },
     },
     ...(config.tokenLifetime ? { tokenLifetime: config.tokenLifetime } : {}),

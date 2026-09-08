@@ -147,6 +147,45 @@ describe("error handling", () => {
     );
   });
 
+  it("keeps Jumio's explanation in details, where only the log can see it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(TOKEN())
+        .mockResolvedValueOnce(new Response('{"message":"workflowDefinition.key invalid"}', { status: 400 })),
+    );
+
+    await expect(new JumioClient(CONFIG).retrieveWorkflow("acc-1", "wf-1")).rejects.toMatchObject({
+      message: "Jumio returned HTTP 400.",
+      details: expect.stringContaining("workflowDefinition.key invalid") as unknown as string,
+    });
+  });
+
+  it("redacts our own secrets out of an echoed request body", async () => {
+    // A distinctive value, so the assertion cannot be satisfied by accident by
+    // the word "secret" inside the replacement marker itself.
+    const config = { ...CONFIG, callbackSecret: "Zq7-callback-token-Zq7" };
+
+    const echoed = JSON.stringify({
+      message: "validation failed",
+      request: { callbackUrl: `https://example.test/cb?token=${config.callbackSecret}` },
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(TOKEN()).mockResolvedValueOnce(new Response(echoed, { status: 400 })),
+    );
+
+    const error = await new JumioClient(config)
+      .retrieveWorkflow("acc-1", "wf-1")
+      .catch((caught: JumioApiError) => caught);
+
+    expect(error).toBeInstanceOf(JumioApiError);
+    expect((error as JumioApiError).details).not.toContain(config.callbackSecret);
+    expect((error as JumioApiError).details).toContain("[redacted-callback-secret]");
+  });
+
   it("reports a network failure as retryable", async () => {
     vi.stubGlobal(
       "fetch",

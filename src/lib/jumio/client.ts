@@ -24,18 +24,30 @@ import type {
 
 const TIMEOUT_MS = 30_000;
 
-/** A Jumio API call that did not succeed. The message is safe to show a user. */
+/**
+ * A Jumio API call that did not succeed.
+ *
+ * `message` is safe to show a user. `details` is Jumio's own explanation and is
+ * for the server log only — it is what turns "HTTP 400" into something
+ * actionable. It is never returned to the browser and never stored on the
+ * verification row.
+ */
 export class JumioApiError extends Error {
   readonly status: number | null;
   readonly retryable: boolean;
+  readonly details: string | null;
 
-  constructor(message: string, status: number | null, retryable: boolean) {
+  constructor(message: string, status: number | null, retryable: boolean, details: string | null = null) {
     super(message);
     this.name = "JumioApiError";
     this.status = status;
     this.retryable = retryable;
+    this.details = details;
   }
 }
+
+/** Enough of Jumio's error to diagnose it, not enough to fill a log with a payload. */
+const MAX_DETAIL_CHARS = 1_000;
 
 /** 5xx and 429 are worth another attempt; a 4xx is our own bad request. */
 function isRetryableStatus(status: number): boolean {
@@ -95,6 +107,7 @@ export class JumioClient {
         `Jumio returned HTTP ${response.status}.`,
         response.status,
         isRetryableStatus(response.status),
+        this.redact(await this.readErrorBody(response)),
       );
     }
 
@@ -107,6 +120,33 @@ export class JumioClient {
     } catch {
       throw new JumioApiError("Jumio returned a malformed response.", response.status, false);
     }
+  }
+
+  /** Jumio explains a 4xx in the body; a failure to read it must not mask the error. */
+  private async readErrorBody(response: Response): Promise<string | null> {
+    try {
+      const text = (await response.text()).trim();
+      return text ? text.slice(0, MAX_DETAIL_CHARS) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Strip our own secrets out before anything is logged.
+   *
+   * A validation error can echo the request back, and the request carries the
+   * callback URL with its shared secret in the query string. That must not
+   * reach a log line.
+   */
+  private redact(text: string | null): string | null {
+    if (!text) return null;
+
+    return text
+      .split(this.config.callbackSecret)
+      .join("[redacted-callback-secret]")
+      .split(this.config.clientSecret)
+      .join("[redacted-client-secret]");
   }
 
   /**

@@ -194,7 +194,12 @@ export async function startDriverVerification(
       data: { status: "FAILED", error: reason, completedAt: new Date() },
     });
 
-    console.error(`[jumio] Account creation failed for verification ${verification.id}: ${reason}`);
+    // The sanitized reason goes on the row and to the user; Jumio's own
+    // explanation goes to the log, which is the only place it belongs.
+    console.error(
+      `[jumio] Account creation failed for verification ${verification.id}: ${reason}` +
+        (apiError?.details ? ` Jumio said: ${apiError.details}` : ""),
+    );
 
     return { ok: false, reason, retryable: apiError?.retryable ?? true };
   }

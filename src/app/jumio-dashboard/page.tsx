@@ -1,9 +1,11 @@
 import { EyeIcon } from "lucide-react";
 import Link from "next/link";
 
+import { AddDriverDialog } from "./add-driver-dialog";
+
 import { VerificationDecisionBadge, VerificationStatusBadge } from "@/components/jumio/verification-badges";
 import { Button } from "@/components/ui/button";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -101,9 +103,12 @@ export default async function JumioDashboardPage() {
             Government ID, selfie and liveness verification for drivers.
           </p>
         </div>
-        <p className="text-sm text-muted-foreground">
-          {drivers.length} {drivers.length === 1 ? "driver" : "drivers"}
-        </p>
+        <div className="flex items-center gap-3">
+          <p className="text-sm text-muted-foreground">
+            {drivers.length} {drivers.length === 1 ? "driver" : "drivers"}
+          </p>
+          <AddDriverDialog />
+        </div>
       </header>
 
       {!configured && (
@@ -137,10 +142,13 @@ export default async function JumioDashboardPage() {
           <CardHeader>
             <CardTitle>No drivers yet</CardTitle>
             <CardDescription>
-              Drivers appear here once they are assigned to a shipment. Identity verification is
-              started from a driver&apos;s profile.
+              Add a driver to start an identity verification for them. Nothing here depends on a
+              shipment existing.
             </CardDescription>
           </CardHeader>
+          <CardContent>
+            <AddDriverDialog label="Add your first driver" />
+          </CardContent>
         </Card>
       ) : (
         <Card className="overflow-hidden p-0">

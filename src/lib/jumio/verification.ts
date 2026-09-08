@@ -350,6 +350,7 @@ export async function syncVerificationFromJumio(
       jumioAccountId: true,
       jumioWorkflowId: true,
       retrievalAttempts: true,
+      decision: true,
     },
   });
 
@@ -407,10 +408,19 @@ export async function syncVerificationFromJumio(
         : "Could not retrieve the verification result.";
 
     // Retrieval failing does not invalidate the driver — it means we do not know
-    // yet. Record why and leave the status for the next callback to move.
+    // yet, which is `PROCESSING`, not `PROCESSED` (§21).
+    //
+    // The callback that triggered this has usually already advanced the row to
+    // PROCESSED. Left there with no decision, the UI reads it as a verification
+    // that did not pass — telling an operator a driver was rejected when all
+    // that actually happened is that we could not fetch the answer.
     await prisma.driverVerification.update({
       where: { id: verification.id },
-      data: { retrievalAttempts: { increment: 1 }, error: reason },
+      data: {
+        retrievalAttempts: { increment: 1 },
+        error: reason,
+        ...(verification.decision ? {} : { status: "PROCESSING", completedAt: null }),
+      },
     });
 
     console.error(`[jumio] Retrieval failed for verification ${verification.id}: ${reason}`);

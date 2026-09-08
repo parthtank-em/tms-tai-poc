@@ -18,5 +18,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // Integration tests need a database and their own setup, which enforces
+    // that they never point at DATABASE_URL. Without this exclusion `npm test`
+    // would pick them up and run those writes against the dev database.
+    exclude: ["**/node_modules/**", "src/**/*.integration.test.ts"],
   },
 });

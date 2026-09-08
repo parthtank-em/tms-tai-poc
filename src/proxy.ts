@@ -24,5 +24,7 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/shipments/:path*"],
+  // /jumio-dashboard is unlinked and reachable by URL only, which is a reason
+  // to gate it, not to skip it.
+  matcher: ["/shipments/:path*", "/jumio-dashboard/:path*"],
 };

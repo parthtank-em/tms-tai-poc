@@ -167,7 +167,7 @@ model Shipment {
 
   /// `PublicAPIShipmentDetails.customer.name` — the shipper this load belongs
   /// to. Read-only from TAI; FreightID never writes it back.
-  customerName     String? @map("customer_name")
+  customerName String? @map("customer_name")
 
   // Load detail (§7). One load per shipment; commodity-level detail is out of
   // scope for use cases 1-4.
@@ -273,7 +273,9 @@ model Driver {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  shipments Shipment[]
+  shipments     Shipment[]
+  /// Jumio identity-verification attempts (newest wins for the rollup above).
+  verifications DriverVerification[]
 
   @@index([name])
   @@map("drivers")
@@ -501,4 +503,141 @@ model TaiApiCall {
   @@index([jobId])
   @@index([eventId])
   @@map("tai_api_calls")
+}
+
+// ---------------------------------------------------------------------------
+// Jumio identity verification
+//
+// Kept deliberately separate from the TAI models above: Jumio is a different
+// integration with its own lifecycle, and `Driver.verificationStatus` stays the
+// app-wide rollup that the shipment screens already read. Everything Jumio-
+// specific — statuses, decisions, extracted document data — lives here.
+//
+// Derived from docs/Jumio_Implementation_Plan.md and the current Jumio API
+// documentation (documentation.jumio.ai).
+// ---------------------------------------------------------------------------
+
+/// Jumio's own `workflowExecution.status` values, plus the two states that are
+/// ours rather than theirs: `PROCESSING` while we wait for retrieval to become
+/// available, and `FAILED` when the transaction never got off the ground.
+enum JumioVerificationStatus {
+  INITIATED
+  ACQUISITION_STARTED
+  ACQUIRED
+  PROCESSING
+  PROCESSED
+  SESSION_EXPIRED
+  TOKEN_EXPIRED
+  FAILED
+}
+
+/// Jumio's `decision.type`. This is the **vendor's** verdict — FreightID policy
+/// is deliberately kept separate so a threshold change on their side does not
+/// silently become a policy change on ours.
+enum JumioDecision {
+  PASSED
+  WARNING
+  REJECTED
+  NOT_EXECUTED
+}
+
+/// One identity-verification attempt for one driver.
+///
+/// A driver can have many: a rejected or expired attempt is kept rather than
+/// overwritten, so "verify again" leaves an audit trail instead of erasing the
+/// previous outcome.
+model DriverVerification {
+  id String @id @default(uuid())
+
+  driverId String @map("driver_id")
+  driver   Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  /// Jumio identifiers. Null until the account call returns.
+  jumioAccountId   String? @map("jumio_account_id")
+  jumioWorkflowId  String? @map("jumio_workflow_id")
+  jumioWorkflowKey String? @map("jumio_workflow_key")
+
+  status    JumioVerificationStatus @default(INITIATED)
+  decision  JumioDecision?
+  /// Jumio risk score, 0 (no risk) to 100. -1 means the workflow never ran.
+  riskScore Float?                  @map("risk_score")
+
+  /// Extracted document data (§9 of the plan). No images are ever stored.
+  documentType       String?   @map("document_type")
+  documentSubType    String?   @map("document_sub_type")
+  extractedFirstName String?   @map("extracted_first_name")
+  extractedLastName  String?   @map("extracted_last_name")
+  extractedDob       DateTime? @map("extracted_dob")
+  licenseNumber      String?   @map("license_number")
+  licenseExpiry      DateTime? @map("license_expiry")
+  issuingCountry     String?   @map("issuing_country")
+  issuingState       String?   @map("issuing_state")
+
+  livenessDecision  String? @map("liveness_decision")
+  faceMatchDecision String? @map("face_match_decision")
+
+  /// Per-capability labels, for the detail view. Never the raw Jumio payload.
+  decisionDetails Json? @map("decision_details")
+
+  /// Consent, recorded before acquisition starts (§2.4).
+  consentObtainedAt DateTime? @map("consent_obtained_at")
+  consentIp         String?   @map("consent_ip")
+  consentCountry    String?   @map("consent_country")
+  consentState      String?   @map("consent_state")
+
+  /// Retrieval bookkeeping — Jumio processing is asynchronous, so a callback
+  /// can arrive before the result is fetchable (§14).
+  retrievalAttempts Int       @default(0) @map("retrieval_attempts")
+  retrievedAt       DateTime? @map("retrieved_at")
+  /// Sanitized failure reason. Never a Jumio payload, token, or credential.
+  error             String?
+
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  callbacks JumioCallbackEvent[]
+
+  @@index([driverId, createdAt])
+  @@index([jumioAccountId])
+  @@index([jumioWorkflowId])
+  @@map("driver_verifications")
+}
+
+/// Every callback Jumio delivers, stored before it is understood — the same
+/// persist-then-ack shape the TAI webhooks use.
+///
+/// The unique key is the callback's own identity. A redelivery of the same
+/// notification collides on it, which is how processing stays idempotent (§12)
+/// without a second read-modify-write.
+model JumioCallbackEvent {
+  id String @id @default(uuid())
+
+  workflowExecutionId String    @map("workflow_execution_id")
+  accountId           String?   @map("account_id")
+  status              String
+  /// `callbackSentAt` as Jumio sent it. Part of the identity of the delivery.
+  callbackSentAt      DateTime? @map("callback_sent_at")
+
+  /// The raw callback body. It carries identifiers and a status only — no
+  /// credential data, no images (§2.5).
+  payload Json
+
+  verificationId String?             @map("verification_id")
+  verification   DriverVerification? @relation(fields: [verificationId], references: [id], onDelete: SetNull)
+
+  /// False when no FreightID verification matched — an audit/security signal
+  /// rather than a processing step (§21).
+  matched     Boolean   @default(true)
+  processedAt DateTime? @map("processed_at")
+  error       String?
+
+  remoteIp   String?  @map("remote_ip")
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@unique([workflowExecutionId, status, callbackSentAt], name: "callback_identity")
+  @@index([workflowExecutionId])
+  @@index([receivedAt])
+  @@map("jumio_callback_events")
 }

@@ -133,11 +133,21 @@ export class JumioClient {
     }
 
     if (!response.ok) {
+      let details = this.redact(await this.readErrorBody(response));
+
+      // A 405 means we chose the wrong verb, and the endpoint already knows the
+      // right one — it is in `Allow`. Carrying it into the log turns "which
+      // method does this take?" from a guess into something the error answers.
+      if (response.status === 405) {
+        const allowed = response.headers.get("allow");
+        if (allowed) details = `${details ?? ""} Allowed methods: ${allowed}.`.trim();
+      }
+
       throw new JumioApiError(
         `Jumio returned HTTP ${response.status}.`,
         response.status,
         isRetryableStatus(response.status),
-        this.redact(await this.readErrorBody(response)),
+        details,
       );
     }
 
@@ -210,6 +220,9 @@ export class JumioClient {
    * `Content-Type` is deliberately not set: `fetch` derives it from the
    * `FormData` body, including the multipart boundary. Setting it by hand omits
    * the boundary and Jumio rejects the request.
+   *
+   * `POST`, not `PUT` — the upload endpoint answers a PUT with 405. Finalize,
+   * just below, *is* a PUT; the two differ, which is easy to get backwards.
    */
   async uploadCredentialPart(
     url: string,
@@ -220,7 +233,7 @@ export class JumioClient {
     const form = new FormData();
     form.append(UPLOAD_FIELD_NAME, file, fileName);
 
-    return this.send<unknown>(url, { method: "PUT", body: form }, token, null);
+    return this.send<unknown>(url, { method: "POST", body: form }, token, null);
   }
 
   /**

@@ -199,3 +199,94 @@ describe("error handling", () => {
     });
   });
 });
+
+describe("credential acquisition", () => {
+  const UPLOAD_URL =
+    "https://api.amer-1.jumio.ai/api/v1/accounts/acc-1/workflow-executions/wf-1/credentials/cred-1/parts";
+  const FINALIZE_URL =
+    "https://api.amer-1.jumio.ai/api/v1/accounts/acc-1/workflow-executions/wf-1";
+
+  it("posts the file as multipart, with the transaction token rather than the tenant one", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new JumioClient(CONFIG).uploadCredentialPart(
+      UPLOAD_URL,
+      "transaction-token",
+      new Blob(["pdf-bytes"], { type: "application/pdf" }),
+      "bill.pdf",
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+
+    expect(url).toBe(UPLOAD_URL);
+    // PUT here answers 405 — the upload and the finalize below take different verbs.
+    expect(init.method).toBe("POST");
+    expect(headers.Authorization).toBe("Bearer transaction-token");
+    expect(init.body).toBeInstanceOf(FormData);
+    // Set by fetch from the FormData, boundary included. Setting it by hand breaks the upload.
+    expect(headers["Content-Type"]).toBeUndefined();
+
+    // No token call: the transaction token is passed in, not fetched.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("finalizes with a PUT, which is the opposite verb from the upload", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new JumioClient(CONFIG).finalizeWorkflowExecution(FINALIZE_URL, "transaction-token");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+
+    expect(url).toBe(FINALIZE_URL);
+    expect(init.method).toBe("PUT");
+    expect(init.body).toBe("{}");
+  });
+
+  it("treats an empty 200 body as success rather than a parse failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new JumioClient(CONFIG).finalizeWorkflowExecution(FINALIZE_URL, "transaction-token"),
+    ).resolves.toEqual({});
+  });
+
+  it("carries the Allow header into a 405, so the right verb is in the log", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: "Request method 'PUT' is not supported" }), {
+        status: 405,
+        headers: { Allow: "POST, OPTIONS" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const error = await new JumioClient(CONFIG)
+      .uploadCredentialPart(UPLOAD_URL, "transaction-token", new Blob(["x"]), "x.pdf")
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(JumioApiError);
+    expect((error as JumioApiError).status).toBe(405);
+    expect((error as JumioApiError).details).toContain("Allowed methods: POST, OPTIONS.");
+    // The user-facing message stays generic; the diagnosis lives in `details`.
+    expect((error as JumioApiError).message).toBe("Jumio returned HTTP 405.");
+  });
+
+  it("does not retry a 401 on an upload — the transaction token cannot be refreshed", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response("", { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new JumioClient(CONFIG).uploadCredentialPart(
+        UPLOAD_URL,
+        "transaction-token",
+        new Blob(["x"]),
+        "x.pdf",
+      ),
+    ).rejects.toBeInstanceOf(JumioApiError);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

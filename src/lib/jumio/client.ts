@@ -49,6 +49,18 @@ export class JumioApiError extends Error {
 /** Enough of Jumio's error to diagnose it, not enough to fill a log with a payload. */
 const MAX_DETAIL_CHARS = 1_000;
 
+/**
+ * Multipart field name for a credential part upload.
+ *
+ * Jumio's public documentation describes the upload endpoints and their limits
+ * but does not print the field name, so this is the one detail here taken from
+ * their support guidance rather than a published page. It is a named constant
+ * because if a tenant's API disagrees, this is the single line to change — and
+ * the 400 that would result carries Jumio's own explanation into the log via
+ * `JumioApiError.details`.
+ */
+const UPLOAD_FIELD_NAME = "file";
+
 /** 5xx and 429 are worth another attempt; a 4xx is our own bad request. */
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
@@ -77,6 +89,24 @@ export class JumioClient {
       throw cause;
     }
 
+    return this.send<T>(url, init, token, retryOn401 ? () => this.request<T>(url, init, false) : null);
+  }
+
+  /**
+   * One HTTP exchange with an explicit bearer token.
+   *
+   * Split out from `request` because credential uploads authenticate with the
+   * **transaction** token Jumio returns in the account reply, not the tenant
+   * token. That token cannot be refreshed — it belongs to one workflow
+   * execution — so those calls pass no `onUnauthorized` and a 401 surfaces
+   * as-is rather than triggering a pointless re-auth.
+   */
+  private async send<T>(
+    url: string,
+    init: RequestInit,
+    token: string,
+    onUnauthorized: (() => Promise<T>) | null,
+  ): Promise<T> {
     let response: Response;
 
     try {
@@ -96,10 +126,10 @@ export class JumioClient {
       throw new JumioApiError(`Could not reach Jumio: ${reason}`, null, true);
     }
 
-    if (response.status === 401 && retryOn401) {
+    if (response.status === 401 && onUnauthorized) {
       // The cached token was revoked or rotated out from under us.
       invalidateJumioAccessToken();
-      return this.request<T>(url, init, false);
+      return onUnauthorized();
     }
 
     if (!response.ok) {
@@ -115,8 +145,16 @@ export class JumioClient {
       return {} as T;
     }
 
+    // Upload and finalize answer 200 with an empty body. Read as text first so
+    // that is a success rather than a JSON parse failure.
+    const text = await response.text();
+
+    if (!text.trim()) {
+      return {} as T;
+    }
+
     try {
-      return (await response.json()) as T;
+      return JSON.parse(text) as T;
     } catch {
       throw new JumioApiError("Jumio returned a malformed response.", response.status, false);
     }
@@ -159,6 +197,50 @@ export class JumioClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+  }
+
+  /**
+   * Upload one credential part — the image or PDF itself.
+   *
+   * `url` is taken verbatim from `workflowExecution.credentials[].api.parts` in
+   * the account reply; it already carries the account, workflow and credential
+   * ids. Building it from a template here would mean guessing a host, and the
+   * upload host is not the account host.
+   *
+   * `Content-Type` is deliberately not set: `fetch` derives it from the
+   * `FormData` body, including the multipart boundary. Setting it by hand omits
+   * the boundary and Jumio rejects the request.
+   */
+  async uploadCredentialPart(
+    url: string,
+    token: string,
+    file: Blob,
+    fileName: string,
+  ): Promise<unknown> {
+    const form = new FormData();
+    form.append(UPLOAD_FIELD_NAME, file, fileName);
+
+    return this.send<unknown>(url, { method: "PUT", body: form }, token, null);
+  }
+
+  /**
+   * Start processing, now that every part is uploaded.
+   *
+   * The API acquisition channel has no user pressing "submit", so nothing would
+   * otherwise tell Jumio the transaction is complete — without this call the
+   * workflow sits at `ACQUIRED` until its token expires.
+   */
+  async finalizeWorkflowExecution(url: string, token: string): Promise<unknown> {
+    return this.send<unknown>(
+      url,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      },
+      token,
+      null,
+    );
   }
 
   /**

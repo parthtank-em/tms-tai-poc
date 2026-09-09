@@ -214,6 +214,8 @@ export type CallbackRecordResult = {
   /** False when the same delivery has already been stored (§12). */
   stored: boolean;
   verificationId: string | null;
+  /** Set instead of `verificationId` when the workflow was a document check. */
+  documentCheckId: string | null;
   workflowExecutionId: string | null;
 };
 
@@ -232,6 +234,11 @@ function isUniqueViolation(error: unknown): boolean {
  * A delivery that matches no known verification is still stored, flagged
  * `matched: false`. That is an audit signal — someone posting arbitrary
  * workflow ids at the endpoint — and it explicitly does not touch any driver.
+ *
+ * Two kinds of workflow arrive on this one endpoint: identity verifications and
+ * document checks. Jumio has no idea they are different, and the callback body
+ * does not say, so the workflow execution id is looked up against both tables.
+ * They can never collide — an execution id belongs to exactly one transaction.
  */
 export async function recordJumioCallback(
   payload: JumioCallbackPayload,
@@ -258,19 +265,33 @@ export async function recordJumioCallback(
       },
     });
 
-    return { stored: true, verificationId: null, workflowExecutionId: null };
+    return { stored: true, verificationId: null, documentCheckId: null, workflowExecutionId: null };
   }
 
-  const verification = await prisma.driverVerification.findFirst({
-    where: { jumioWorkflowId: workflowExecutionId },
-    select: { id: true },
-  });
+  const [verification, documentCheck] = await Promise.all([
+    prisma.driverVerification.findFirst({
+      where: { jumioWorkflowId: workflowExecutionId },
+      select: { id: true },
+    }),
+    prisma.documentCheck.findFirst({
+      where: { jumioWorkflowId: workflowExecutionId },
+      select: { id: true },
+    }),
+  ]);
 
-  if (!verification) {
+  const matched = Boolean(verification ?? documentCheck);
+
+  if (!matched) {
     console.warn(
       `[jumio] Callback for unknown workflow ${workflowExecutionId} from ${meta.remoteIp ?? "unknown ip"}.`,
     );
   }
+
+  const identifiers = {
+    verificationId: verification?.id ?? null,
+    documentCheckId: documentCheck?.id ?? null,
+    workflowExecutionId,
+  };
 
   try {
     await prisma.jumioCallbackEvent.create({
@@ -280,8 +301,9 @@ export async function recordJumioCallback(
         status,
         callbackSentAt,
         payload: payload as Prisma.InputJsonValue,
-        verificationId: verification?.id ?? null,
-        matched: Boolean(verification),
+        verificationId: identifiers.verificationId,
+        documentCheckId: identifiers.documentCheckId,
+        matched,
         remoteIp: meta.remoteIp,
       },
     });
@@ -289,12 +311,12 @@ export async function recordJumioCallback(
     // P2002 on the callback identity: Jumio redelivered something we already
     // have. That is a success, not a failure — ack it and do no further work.
     if (isUniqueViolation(error)) {
-      return { stored: false, verificationId: verification?.id ?? null, workflowExecutionId };
+      return { stored: false, ...identifiers };
     }
     throw error;
   }
 
-  return { stored: true, verificationId: verification?.id ?? null, workflowExecutionId };
+  return { stored: true, ...identifiers };
 }
 
 /**

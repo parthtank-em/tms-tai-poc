@@ -3,6 +3,10 @@ import { after } from "next/server";
 import { verifyJumioCallback } from "@/lib/jumio/callback-auth";
 import { getJumioConfig, JumioConfigError } from "@/lib/jumio/config";
 import {
+  applyDocumentCallbackStatus,
+  syncDocumentCheckFromJumio,
+} from "@/lib/jumio/document-check";
+import {
   applyCallbackStatus,
   recordJumioCallback,
   syncVerificationFromJumio,
@@ -66,27 +70,32 @@ export async function POST(request: Request): Promise<Response> {
 
   // A redelivery of something already stored, or a workflow we do not know:
   // ack and stop. Neither may touch a driver (§12, §21).
-  if (!record.stored || !record.verificationId) {
+  if (!record.stored || !(record.verificationId ?? record.documentCheckId)) {
     return Response.json({ received: true, processed: false });
   }
 
-  const verificationId = record.verificationId;
+  const { verificationId, documentCheckId } = record;
   const status = payload.workflowExecution?.status ?? "";
+  // Only a finished workflow has something to retrieve. The interim states will
+  // each send their own callback.
+  const finished = status.toUpperCase() === "PROCESSED";
 
   after(async () => {
     try {
-      await applyCallbackStatus(verificationId, status);
-
-      // Only a finished workflow has something to retrieve. The interim states
-      // will each send their own callback.
-      if (status.toUpperCase() === "PROCESSED") {
-        await syncVerificationFromJumio(verificationId);
+      if (verificationId) {
+        await applyCallbackStatus(verificationId, status);
+        if (finished) await syncVerificationFromJumio(verificationId);
+      } else if (documentCheckId) {
+        await applyDocumentCallbackStatus(documentCheckId, status);
+        if (finished) await syncDocumentCheckFromJumio(documentCheckId);
       }
 
-      await markProcessed(verificationId, status);
+      await markProcessed({ verificationId, documentCheckId }, status);
     } catch (error) {
       const reason = error instanceof Error ? error.message : "unknown error";
-      console.error(`[jumio] Post-callback processing failed for ${verificationId}: ${reason}`);
+      console.error(
+        `[jumio] Post-callback processing failed for ${verificationId ?? documentCheckId}: ${reason}`,
+      );
     }
   });
 
@@ -94,9 +103,18 @@ export async function POST(request: Request): Promise<Response> {
 }
 
 /** Stamp the stored callback rows for this workflow state as handled. */
-async function markProcessed(verificationId: string, status: string): Promise<void> {
+async function markProcessed(
+  owner: { verificationId: string | null; documentCheckId: string | null },
+  status: string,
+): Promise<void> {
   await prisma.jumioCallbackEvent.updateMany({
-    where: { verificationId, status, processedAt: null },
+    where: {
+      ...(owner.verificationId
+        ? { verificationId: owner.verificationId }
+        : { documentCheckId: owner.documentCheckId }),
+      status,
+      processedAt: null,
+    },
     data: { processedAt: new Date() },
   });
 }

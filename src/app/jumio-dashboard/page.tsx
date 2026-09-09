@@ -107,6 +107,9 @@ export default async function JumioDashboardPage() {
           <p className="text-sm text-muted-foreground">
             {drivers.length} {drivers.length === 1 ? "driver" : "drivers"}
           </p>
+          <Button variant="outline" size="sm" render={<Link href="/jumio-dashboard/documents" />}>
+            Document check
+          </Button>
           <AddDriverDialog />
         </div>
       </header>

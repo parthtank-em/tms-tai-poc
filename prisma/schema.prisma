@@ -273,9 +273,12 @@ model Driver {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  shipments     Shipment[]
+  shipments      Shipment[]
   /// Jumio identity-verification attempts (newest wins for the rollup above).
-  verifications DriverVerification[]
+  verifications  DriverVerification[]
+  /// Supporting-document checks (address proof and the like) run for this
+  /// driver. Optional on both sides: a check does not require a driver.
+  documentChecks DocumentCheck[]
 
   @@index([name])
   @@map("drivers")
@@ -627,6 +630,12 @@ model JumioCallbackEvent {
   verificationId String?             @map("verification_id")
   verification   DriverVerification? @relation(fields: [verificationId], references: [id], onDelete: SetNull)
 
+  /// Set instead of `verificationId` when the workflow belongs to a document
+  /// check. Exactly one of the two is populated on a matched delivery — the
+  /// two flows run different Jumio workflows and never share an execution id.
+  documentCheckId String?        @map("document_check_id")
+  documentCheck   DocumentCheck? @relation(fields: [documentCheckId], references: [id], onDelete: SetNull)
+
   /// False when no FreightID verification matched — an audit/security signal
   /// rather than a processing step (§21).
   matched     Boolean   @default(true)
@@ -639,5 +648,97 @@ model JumioCallbackEvent {
   @@unique([workflowExecutionId, status, callbackSentAt], name: "callback_identity")
   @@index([workflowExecutionId])
   @@index([receivedAt])
+  @@index([documentCheckId])
   @@map("jumio_callback_events")
+}
+
+/// One document-verification attempt: an operator uploads a file, Jumio checks
+/// it and extracts what it can read.
+///
+/// Separate from `DriverVerification` on purpose. That model is the identity
+/// journey — a live capture of a government ID plus a selfie, owned by the
+/// driver and gated on their consent. This is a back-office check of a
+/// *supporting* document (an address proof, a bank statement), run against a
+/// different Jumio workflow with different capabilities and a different
+/// decision meaning. Folding the two into one table would mean half the columns
+/// are always null and `decision` means two different things.
+///
+/// The uploaded file itself is never stored. It is streamed to Jumio and
+/// discarded; only its name, type and size survive, so the row says what was
+/// submitted without becoming a store of customer documents.
+model DocumentCheck {
+  id String @id @default(uuid())
+
+  /// Optional. A check can stand alone — the point of this screen is that it
+  /// works without a driver record existing.
+  driverId String? @map("driver_id")
+  driver   Driver? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+
+  /// Jumio identifiers. Null until the account call returns.
+  jumioAccountId    String? @map("jumio_account_id")
+  jumioWorkflowId   String? @map("jumio_workflow_id")
+  jumioWorkflowKey  String? @map("jumio_workflow_key")
+  /// The DOCUMENT credential the file was uploaded against.
+  jumioCredentialId String? @map("jumio_credential_id")
+
+  /// What the operator said they were uploading, e.g. `UB`, `BS`. Jumio uses it
+  /// to pick the template; `documentType` below is what Jumio actually read.
+  requestedType    String @map("requested_type")
+  /// ISO 3166-1 alpha-3. Jumio scopes document templates by country.
+  requestedCountry String @map("requested_country")
+
+  /// The submitted file, described but not kept.
+  fileName      String @map("file_name")
+  fileMimeType  String @map("file_mime_type")
+  fileSizeBytes Int    @map("file_size_bytes")
+
+  status    JumioVerificationStatus @default(INITIATED)
+  decision  JumioDecision?
+  riskScore Float?                  @map("risk_score")
+
+  /// Extracted document data. Address is the reason this screen exists, so it
+  /// is broken out into columns rather than left inside the JSON blob.
+  documentType       String?   @map("document_type")
+  documentSubType    String?   @map("document_sub_type")
+  issuer             String?
+  extractedName      String?   @map("extracted_name")
+  addressLine1       String?   @map("address_line1")
+  addressLine2       String?   @map("address_line2")
+  addressCity        String?   @map("address_city")
+  addressSubdivision String?   @map("address_subdivision")
+  addressPostalCode  String?   @map("address_postal_code")
+  addressCountry     String?   @map("address_country")
+  /// Jumio's own single-line rendering, kept because the parts above are not
+  /// always all populated and an operator still needs something to read.
+  formattedAddress   String?   @map("formatted_address")
+  documentNumber     String?   @map("document_number")
+  issuingDate        DateTime? @map("issuing_date")
+  expiryDate         DateTime? @map("expiry_date")
+
+  /// `capabilities.extraction[0].data` as Jumio returned it.
+  ///
+  /// Document extraction is not one fixed shape — a utility bill and a bank
+  /// statement do not carry the same fields, and Jumio adds document types
+  /// without warning. The columns above are what the UI reads; this is so a
+  /// field we did not anticipate is visible rather than silently dropped.
+  extractedData   Json? @map("extracted_data")
+  /// Per-capability labels, e.g. `{ "extraction": "OK", "usability": "OK" }`.
+  decisionDetails Json? @map("decision_details")
+
+  retrievalAttempts Int       @default(0) @map("retrieval_attempts")
+  retrievedAt       DateTime? @map("retrieved_at")
+  /// Sanitized failure reason. Never a Jumio payload, token, or credential.
+  error             String?
+
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  callbacks JumioCallbackEvent[]
+
+  @@index([createdAt])
+  @@index([driverId, createdAt])
+  @@index([jumioWorkflowId])
+  @@map("document_checks")
 }

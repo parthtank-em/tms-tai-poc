@@ -1,66 +1,68 @@
 /*
- * FreightID palette for Jumio's Web SDK.
+ * Red theme for Jumio's Web SDK: red surfaces, white text.
  *
  * The SDK reads these from `:root` and falls back to its own defaults when
- * unset. Jumio ships a green action colour on blue-tinted greys; FreightID is
- * monochrome (see `--primary`/`--border`/`--foreground` in globals.css), so
- * both scales become pure neutrals here.
+ * unset. This inverts its polarity — Jumio's neutral scale runs light (page
+ * background) to dark (body text), so here step 1 is the deepest red and step
+ * 12 is white, with every step between them interpolating.
  *
- * Only the light theme is tuned. The SDK's dark theme is not switched on, and
- * its defaults stay in place.
+ * The hue is FreightID's own red, `--destructive` in globals.css (oklch hue
+ * 27.3), so the SDK is a shade of a colour the app already uses.
+ *
+ * Only the light theme is tuned; the SDK's dark theme is not switched on.
  *
  * @see https://documentation.jumio.ai/docs/developer-resources/SDKs/web-sdk/web-sdk-css
  */
 
 :root {
   /*
-   * Neutral scale: page background at 1, body text at 12, surfaces, borders
-   * and muted text in between. Each step keeps the lightness of Jumio's own
-   * grey and drops the blue cast — that is what preserves the contrast
-   * decisions baked into their components. Four line up with an app token.
+   * Surfaces and text, inverted.
+   *
+   *   1  page background, secondary-button fill
+   *   3  quiet-button hover fill
+   *   4  active fill, disabled text
+   *   5  borders
+   *   7  muted text
+   *  12  body text (white)
    */
-  --jumio-sdk-color-secondary1: oklch(0.97 0 0); /* --muted */
-  --jumio-sdk-color-secondary2: oklch(0.95 0 0);
-  --jumio-sdk-color-secondary3: oklch(0.922 0 0); /* --border */
-  --jumio-sdk-color-secondary4: oklch(0.84 0 0);
-  --jumio-sdk-color-secondary5: oklch(0.708 0 0); /* --ring */
-  --jumio-sdk-color-secondary6: oklch(0.58 0 0);
-  --jumio-sdk-color-secondary7: oklch(0.49 0 0);
-  --jumio-sdk-color-secondary8: oklch(0.371 0 0);
-  --jumio-sdk-color-secondary9: oklch(0.32 0 0);
-  --jumio-sdk-color-secondary10: oklch(0.28 0 0);
-  --jumio-sdk-color-secondary11: oklch(0.24 0 0);
-  --jumio-sdk-color-secondary12: oklch(0.145 0 0); /* --foreground */
+  --jumio-sdk-color-secondary1: oklch(0.45 0.16 27.3);
+  --jumio-sdk-color-secondary2: oklch(0.5 0.17 27.3);
+  --jumio-sdk-color-secondary3: oklch(0.545 0.18 27.3);
+  --jumio-sdk-color-secondary4: oklch(0.6 0.18 27.3);
+  --jumio-sdk-color-secondary5: oklch(0.68 0.15 27.3);
+  --jumio-sdk-color-secondary6: oklch(0.75 0.12 27.3);
+  --jumio-sdk-color-secondary7: oklch(0.82 0.09 27.3);
+  --jumio-sdk-color-secondary8: oklch(0.87 0.07 27.3);
+  --jumio-sdk-color-secondary9: oklch(0.91 0.05 27.3);
+  --jumio-sdk-color-secondary10: oklch(0.94 0.035 27.3);
+  --jumio-sdk-color-secondary11: oklch(0.97 0.02 27.3);
+  --jumio-sdk-color-secondary12: oklch(1 0 0);
 
   /*
-   * Action scale. Not a light-to-dark ramp — the SDK spends most of these on
-   * one button's states, so they are set as those states:
+   * Action scale. Not a ramp — the SDK spends most of these on one button's
+   * states, so they are set as those states. The primary button inverts again
+   * against the red page: a white fill with a deep red label.
    *
-   *   1  primary button, disabled fill        (label stays secondary6)
-   *   2  primary button, pressed
-   *   3  illustration strokes
-   *   4  primary button, default fill         = --primary
-   *   5  primary button, focused
-   *   6  quiet/link text on white
-   *   7  unused in the light theme
-   *
-   * 2 and 5 sit just above 4 so pressing and focusing lighten the button,
-   * which is the direction Jumio's own green palette moves in.
+   *   1  disabled fill    2  pressed fill      3  illustration strokes
+   *   4  default fill     5  focused fill      6  quiet/link text on red
    */
-  --jumio-sdk-color-primary1: oklch(0.95 0 0);
-  --jumio-sdk-color-primary2: oklch(0.32 0 0);
-  --jumio-sdk-color-primary3: oklch(0.85 0 0);
-  --jumio-sdk-color-primary4: oklch(0.205 0 0); /* --primary */
-  --jumio-sdk-color-primary5: oklch(0.27 0 0);
-  --jumio-sdk-color-primary6: oklch(0.42 0 0);
-  --jumio-sdk-color-primary7: oklch(0.3 0 0);
+  --jumio-sdk-color-primary1: oklch(0.6 0.1 27.3);
+  --jumio-sdk-color-primary2: oklch(0.9 0.04 27.3);
+  --jumio-sdk-color-primary3: oklch(0.97 0.02 27.3);
+  --jumio-sdk-color-primary4: oklch(1 0 0);
+  --jumio-sdk-color-primary5: oklch(0.95 0.02 27.3);
+  --jumio-sdk-color-primary6: oklch(0.92 0.05 27.3);
+  --jumio-sdk-color-primary7: oklch(0.85 0.07 27.3);
 
   /*
-   * The primary button's label, which Jumio otherwise binds to `secondary12`
-   * — near-black, and unreadable now that the fill above is near-black too.
-   * Disabled is left alone: that fill stays light, so its grey label is right.
+   * The primary button's label. Jumio binds it to `secondary12` — now white,
+   * and invisible on the white fill above. Disabled is left alone: that fill
+   * is a muted red, so Jumio's own muted label still reads.
    */
-  --jumio-sdk-theme-light-clickable-primary-default-color: oklch(0.985 0 0); /* --primary-foreground */
-  --jumio-sdk-theme-light-clickable-primary-focus-color: oklch(0.985 0 0);
-  --jumio-sdk-theme-light-clickable-primary-active-color: oklch(0.985 0 0);
+  --jumio-sdk-theme-light-clickable-primary-default-color: oklch(0.4 0.16 27.3);
+  --jumio-sdk-theme-light-clickable-primary-focus-color: oklch(0.4 0.16 27.3);
+  --jumio-sdk-theme-light-clickable-primary-active-color: oklch(0.4 0.16 27.3);
+
+  /* The frame around the page, which Jumio otherwise hardcodes to white. */
+  --jumio-sdk-theme-light-app-container-bg-color: oklch(0.45 0.16 27.3);
 }

@@ -66,6 +66,19 @@ export type JumioCreateAccountRequest = {
 };
 
 /**
+ * `PUT /api/v1/accounts/{accountId}` request body — pickup re-authentication.
+ *
+ * Deliberately tiny. The account already exists and already holds the facemap
+ * from registration, so all this says is "run this workflow on that identity".
+ * No consent block: consent was recorded when the account was created.
+ */
+export type JumioAuthenticateRequest = {
+  customerInternalReference: string;
+  workflowDefinition: { key: string };
+  userReference?: string;
+};
+
+/**
  * One credential in the account-create reply, with the URLs to acquire it.
  *
  * `api.token` is a **transaction-scoped** token, not the tenant bearer: it

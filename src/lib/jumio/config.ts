@@ -67,6 +67,14 @@ export type JumioConfig = {
    * what the documents screen reports rather than failing at upload time.
    */
   documentWorkflowKey: string | null;
+  /**
+   * Workflow definition key for pickup re-authentication (Jumio's `10014`).
+   *
+   * A third definition again: it runs a selfie against the facemap captured at
+   * registration, with no document at all. Null when the tenant has not
+   * enabled it, which is what hides the dashboard button.
+   */
+  authWorkflowKey: string | null;
   /** Public HTTPS URL Jumio posts callbacks to, secret already appended. */
   callbackUrl: string;
   /** Shared secret embedded in `callbackUrl`, checked on every delivery. */
@@ -155,6 +163,7 @@ export function getJumioConfig(): JumioConfig {
     ),
     workflowKey: require_("JUMIO_WORKFLOW_KEY"),
     documentWorkflowKey: read("JUMIO_DOCUMENT_WORKFLOW_KEY"),
+    authWorkflowKey: read("JUMIO_AUTH_WORKFLOW_KEY"),
     callbackUrl,
     callbackSecret,
     appUrl,
@@ -170,6 +179,15 @@ export function isJumioConfigured(): boolean {
   try {
     getJumioConfig();
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True when pickup re-authentication can run. Needs its own workflow definition. */
+export function isJumioPickupConfigured(): boolean {
+  try {
+    return getJumioConfig().authWorkflowKey !== null;
   } catch {
     return false;
   }

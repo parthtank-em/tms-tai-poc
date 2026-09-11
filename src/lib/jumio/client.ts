@@ -2,6 +2,7 @@ import { getJumioAccessToken, invalidateJumioAccessToken, JumioAuthError } from 
 import { getJumioConfig, type JumioConfig } from "./config";
 
 import type {
+  JumioAuthenticateRequest,
   JumioCreateAccountRequest,
   JumioCreateAccountResponse,
   JumioWorkflowDetails,
@@ -207,6 +208,28 @@ export class JumioClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+  }
+
+  /**
+   * `PUT /api/v1/accounts/{accountId}` — run a new workflow on an existing
+   * account, which is how pickup re-authentication reaches the facemap captured
+   * at registration.
+   *
+   * A PUT on the account resource, not a POST to the collection: POST would
+   * enrol a second, unrelated identity rather than re-checking this one.
+   */
+  async authenticateAccount(
+    accountId: string,
+    body: JumioAuthenticateRequest,
+  ): Promise<JumioCreateAccountResponse> {
+    return this.request<JumioCreateAccountResponse>(
+      `${this.config.accountBaseUrl}/api/v1/accounts/${encodeURIComponent(accountId)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
   }
 
   /**

@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { AddDriverDialog } from "./add-driver-dialog";
 
+import { PickupVerificationDialog } from "@/components/jumio/pickup-verification-dialog";
 import { VerificationDecisionBadge, VerificationStatusBadge } from "@/components/jumio/verification-badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,7 +16,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDateTime, formatText } from "@/lib/format";
-import { isJumioConfigured } from "@/lib/jumio/config";
+import { isJumioConfigured, isJumioPickupConfigured } from "@/lib/jumio/config";
 import { prisma } from "@/lib/prisma";
 
 import type { JumioVerificationStatus } from "@/generated/prisma/enums";
@@ -94,6 +95,12 @@ export default async function JumioDashboardPage() {
 
   const configured = isJumioConfigured();
 
+  // Only a driver whose registration actually passed has a facemap to compare a
+  // pickup selfie against.
+  const pickupDrivers = drivers
+    .filter((driver) => driver.verificationStatus === "VERIFIED")
+    .map((driver) => ({ id: driver.id, name: driver.name }));
+
   return (
     <main className="mx-auto w-full max-w-7xl px-6 py-10">
       <header className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
@@ -110,6 +117,7 @@ export default async function JumioDashboardPage() {
           {/* The document-check screen is still reachable at
               /jumio-dashboard/documents — it is just not advertised here, since
               identity verification is the only flow in scope for now. */}
+          {isJumioPickupConfigured() && <PickupVerificationDialog drivers={pickupDrivers} />}
           <AddDriverDialog />
         </div>
       </header>

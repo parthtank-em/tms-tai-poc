@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { JumioApiError, type JumioClient } from "./client";
 import {
+  abandonVerification,
   applyCallbackStatus,
   findActiveVerification,
   latestVerification,
@@ -349,6 +350,85 @@ describe("start verification", () => {
     } finally {
       process.env.NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL = "sdk";
     }
+  });
+});
+
+describe("cancelling an attempt", () => {
+  it("frees the driver to start again", async () => {
+    const driverId = await createDriver();
+    const first = await startDriverVerification(driverId, CONSENT, stubClient({}));
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    expect(await abandonVerification(first.verificationId)).toBe(true);
+
+    const stored = await prisma.driverVerification.findUniqueOrThrow({
+      where: { id: first.verificationId },
+    });
+    expect(stored.status).toBe("FAILED");
+    expect(stored.error).toContain("Cancelled");
+    expect(stored.completedAt).not.toBeNull();
+
+    // The whole point: no active attempt left standing.
+    expect(await findActiveVerification(driverId)).toBeNull();
+
+    const driver = await prisma.driver.findUniqueOrThrow({ where: { id: driverId } });
+    expect(driver.verificationStatus).toBe("UNVERIFIED");
+
+    const second = await startDriverVerification(driverId, CONSENT, stubClient({}));
+    expect(second.ok).toBe(true);
+  });
+
+  it("refuses once the driver has started capturing", async () => {
+    const driverId = await createDriver();
+    const started = await startDriverVerification(driverId, CONSENT, stubClient({}));
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    await applyCallbackStatus(started.verificationId, "ACQUISITION_STARTED");
+
+    // Mid-journey the row belongs to the callback, not to a button.
+    expect(await abandonVerification(started.verificationId)).toBe(false);
+
+    const stored = await prisma.driverVerification.findUniqueOrThrow({
+      where: { id: started.verificationId },
+    });
+    expect(stored.status).toBe("ACQUISITION_STARTED");
+  });
+
+  it("lets a real result overwrite a cancelled attempt", async () => {
+    const driverId = await createDriver();
+    const workflowId = `wf-${crypto.randomUUID()}`;
+
+    const started = await startDriverVerification(
+      driverId,
+      CONSENT,
+      stubClient({
+        async createAccount() {
+          return {
+            account: { id: `acc-${crypto.randomUUID()}` },
+            workflowExecution: { id: workflowId },
+            sdk: { token: "sdk-token" },
+          };
+        },
+      }),
+    );
+    if (!started.ok) throw new Error("fixture failed to start a verification");
+
+    await abandonVerification(started.verificationId);
+
+    // Cancelling is not the last word: if Jumio finishes the workflow anyway,
+    // retrieval still lands the true outcome.
+    await syncVerificationFromJumio(
+      started.verificationId,
+      stubClient({ retrieveWorkflow: async () => passedWorkflow(workflowId) }),
+    );
+
+    const stored = await prisma.driverVerification.findUniqueOrThrow({
+      where: { id: started.verificationId },
+    });
+    expect(stored.status).toBe("PROCESSED");
+    expect(stored.decision).toBe("PASSED");
   });
 });
 

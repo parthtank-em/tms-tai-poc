@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { CancelAttempt } from "@/components/jumio/cancel-attempt";
 import {
   CapabilityBadge,
   RiskScore,
@@ -135,6 +136,16 @@ export default async function DriverProfilePage({
                   Verification in progress — waiting for the result from Jumio. This page updates
                   when the callback arrives.
                 </p>
+              )}
+
+              {/* An attempt the driver backed out of before Jumio saw anything.
+                  It will never move on its own, and it blocks the next one. */}
+              {latest.status === "INITIATED" && (
+                <CancelAttempt
+                  verificationId={latest.id}
+                  driverId={driver.id}
+                  label="Cancel and start over"
+                />
               )}
 
               <dl className="divide-y">

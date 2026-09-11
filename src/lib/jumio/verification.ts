@@ -252,6 +252,45 @@ export async function startDriverVerification(
   }
 }
 
+/**
+ * Give up on an attempt that never reached the capture screens.
+ *
+ * Only `INITIATED` qualifies. Once Jumio reports `ACQUISITION_STARTED` the
+ * driver is mid-journey and the row belongs to the callback, not to a button.
+ *
+ * Marked `FAILED` rather than deleted: an abandoned attempt is a real event
+ * (§21), and leaving it non-terminal is what blocks the driver from ever
+ * starting again. It is not the last word either — if Jumio does finish this
+ * workflow, the `PROCESSED` callback still runs retrieval and overwrites the
+ * row with the true result.
+ */
+export async function abandonVerification(verificationId: string): Promise<boolean> {
+  const verification = await prisma.driverVerification.findUnique({
+    where: { id: verificationId },
+    select: { id: true, status: true, driverId: true },
+  });
+
+  if (verification?.status !== "INITIATED") return false;
+
+  await prisma.driverVerification.update({
+    where: { id: verification.id },
+    data: {
+      status: "FAILED",
+      error: "Cancelled before capture began.",
+      completedAt: new Date(),
+    },
+  });
+
+  // Same reasoning as an expired session: not a rejected driver, just one who
+  // has to start again.
+  await prisma.driver.update({
+    where: { id: verification.driverId },
+    data: { verificationStatus: "UNVERIFIED" },
+  });
+
+  return true;
+}
+
 export type CallbackRecordResult = {
   /** False when the same delivery has already been stored (§12). */
   stored: boolean;

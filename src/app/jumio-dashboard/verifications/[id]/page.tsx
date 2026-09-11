@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { ResultPoller } from "./result-poller";
 
+import { CancelAttempt } from "@/components/jumio/cancel-attempt";
 import {
   CapabilityBadge,
   RiskScore,
@@ -149,9 +150,21 @@ export default async function VerificationResultPage({
           </dl>
 
           {phase === "pending" ? (
-            <p className="text-sm text-muted-foreground">
-              This page refreshes itself when the result arrives. You can safely leave it.
-            </p>
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                This page refreshes itself when the result arrives. You can safely leave it.
+              </p>
+
+              {/* Still INITIATED means Jumio never saw a capture begin, so nothing
+                  will move this row on its own — and while it sits here the driver
+                  cannot start again. */}
+              {verification.status === "INITIATED" && (
+                <CancelAttempt
+                  verificationId={verification.id}
+                  driverId={verification.driver.id}
+                />
+              )}
+            </div>
           ) : (
             <div className="flex gap-3">
               <Button render={<Link href={driverHref} />} variant="outline">

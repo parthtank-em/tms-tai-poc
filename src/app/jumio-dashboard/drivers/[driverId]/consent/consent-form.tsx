@@ -72,20 +72,44 @@ export function ConsentForm({ driverId, driverName }: { driverId: string; driver
     }
   }
 
-  // Success, failure and cancel all land on the verification page: it is the
-  // one screen that reads the real state, so it cannot report something the
-  // database does not say — including "still waiting" after a cancel.
-  // `useCallback` because JumioWebSdk rebuilds itself when this changes.
+  // The driver reached the end of the capture screens, one way or the other.
+  // Not a result — the verification page reads the real state from the
+  // database. `useCallback` because JumioWebSdk rebuilds itself on a new
+  // identity, which would drop the camera.
   const finish = useCallback(() => {
     router.push(`/jumio-dashboard/verifications/${verificationId}`);
   }, [router, verificationId]);
+
+  /**
+   * Backing out before Jumio saw anything.
+   *
+   * The transaction already exists and its row is `INITIATED`, which counts as
+   * active — leaving it there would block this driver from starting again
+   * until the token expired. Telling the server to abandon it is what makes
+   * "cancel" mean cancel.
+   */
+  async function cancel() {
+    setSdk(null);
+
+    try {
+      await fetch("/api/jumio/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verificationId }),
+      });
+    } catch {
+      // Navigating anyway — the driver page shows whatever actually happened.
+    }
+
+    router.push(`/jumio-dashboard/drivers/${driverId}`);
+  }
 
   if (sdk) {
     return (
       <div className="fixed inset-0 z-50 flex flex-col bg-background">
         <div className="flex items-center justify-between gap-4 border-b px-4 py-2">
           <p className="truncate text-sm font-medium">Verifying {driverName}</p>
-          <Button variant="ghost" size="sm" onClick={finish}>
+          <Button variant="ghost" size="sm" onClick={cancel}>
             Cancel
           </Button>
         </div>

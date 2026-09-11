@@ -1,5 +1,5 @@
 import { JumioApiError, JumioClient } from "./client";
-import { getJumioConfig, JumioConfigError, type JumioConfig } from "./config";
+import { getJumioConfig, JUMIO_LOCALE, JumioConfigError, type JumioConfig } from "./config";
 import { mapWorkflowDetails, mapWorkflowStatus, rollupDriverStatus } from "./mapper";
 import { retrieveWorkflowWithBackoff } from "./retrieval";
 
@@ -7,7 +7,12 @@ import type { Prisma } from "@/generated/prisma/client";
 import type { JumioVerificationStatus } from "@/generated/prisma/enums";
 import { prisma } from "@/lib/prisma";
 
-import type { JumioCallbackPayload, JumioCreateAccountRequest } from "./types";
+import type { JumioAcquisition } from "./acquisition";
+import type {
+  JumioCallbackPayload,
+  JumioCreateAccountRequest,
+  JumioCreateAccountResponse,
+} from "./types";
 
 /**
  * The Jumio verification service — the only module that writes verification
@@ -15,9 +20,10 @@ import type { JumioCallbackPayload, JumioCreateAccountRequest } from "./types";
  *
  * Two of those rules are worth stating up front:
  *
- * - **A browser redirect is never evidence.** Returning to the success URL only
- *   means the driver finished the capture UI. Status changes come from the
- *   callback plus retrieval, never from the redirect (§10).
+ * - **Finishing the capture UI is never evidence.** Returning to the success
+ *   URL, or the Web SDK firing `workflow:success`, only means the driver
+ *   reached the end of the screens. Status changes come from the callback plus
+ *   retrieval, never from the browser (§10).
  * - **State never goes backwards.** Callbacks can arrive out of order, so an
  *   `ACQUIRED` notification landing after `PROCESSED` must not un-verify a
  *   driver.
@@ -43,6 +49,39 @@ const PROGRESS: Record<JumioVerificationStatus, number> = {
   FAILED: 4,
 };
 
+/** Pick the browser's half of the account reply for the configured channel. */
+function acquisitionFrom(
+  response: JumioCreateAccountResponse,
+  config: JumioConfig,
+): JumioAcquisition {
+  if (config.acquisitionChannel === "sdk") {
+    const token = response.sdk?.token ?? null;
+
+    if (!token) {
+      // The fix names an env var, so it rides in `details`, which only ever
+      // reaches the log — never the row or the browser (§20).
+      throw new JumioApiError(
+        "Identity verification is not available right now.",
+        null,
+        false,
+        "Jumio returned no sdk.token. Enable the SDK acquisition channel on workflow " +
+          `${config.workflowKey} in Jumio's Workflow Designer, or set ` +
+          'NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL="redirect".',
+      );
+    }
+
+    return { channel: "sdk", token, datacenter: config.sdkDatacenter, locale: JUMIO_LOCALE };
+  }
+
+  const redirectUrl = response.web?.href ?? null;
+
+  if (!redirectUrl) {
+    throw new JumioApiError("Jumio returned no Web Client URL.", null, false);
+  }
+
+  return { channel: "redirect", redirectUrl };
+}
+
 export type ConsentInput = {
   obtainedAt: Date;
   /** Jumio requires this. Null only when the platform gave us no client address. */
@@ -54,7 +93,7 @@ export type ConsentInput = {
 };
 
 export type StartVerificationResult =
-  | { ok: true; verificationId: string; redirectUrl: string }
+  | { ok: true; verificationId: string; acquisition: JumioAcquisition }
   | { ok: false; reason: string; retryable: boolean };
 
 /**
@@ -139,6 +178,8 @@ export async function startDriverVerification(
     userReference: driverId,
     workflowDefinition: { key: config.workflowKey },
     callbackUrl: config.callbackUrl,
+    // Sent on both channels. The SDK ignores these, but sending them anyway is
+    // what lets the channel be switched by configuration alone.
     web: {
       // No query string on either URL: Jumio rejects success/error URLs that
       // carry query parameters, ports, IP addresses or fragments. The Web
@@ -146,7 +187,7 @@ export async function startDriverVerification(
       // is what the return page reads.
       successUrl: `${config.appUrl}/jumio-dashboard/verifications/${verification.id}`,
       errorUrl: `${config.appUrl}/jumio-dashboard/verifications/${verification.id}`,
-      locale: "en",
+      locale: JUMIO_LOCALE,
     },
     userConsent: {
       userIp: consent.ip ?? undefined,
@@ -166,15 +207,16 @@ export async function startDriverVerification(
 
     const accountId = response.account?.id ?? null;
     const workflowId = response.workflowExecution?.id ?? null;
-    const redirectUrl = response.web?.href ?? null;
 
-    if (!accountId || !workflowId || !redirectUrl) {
+    if (!accountId || !workflowId) {
       throw new JumioApiError(
-        "Jumio response was missing the account, workflow or Web Client URL.",
+        "Jumio response was missing the account or workflow execution id.",
         null,
         false,
       );
     }
+
+    const acquisition = acquisitionFrom(response, config);
 
     await prisma.driverVerification.update({
       where: { id: verification.id },
@@ -186,7 +228,7 @@ export async function startDriverVerification(
       data: { verificationStatus: "PENDING" },
     });
 
-    return { ok: true, verificationId: verification.id, redirectUrl };
+    return { ok: true, verificationId: verification.id, acquisition };
   } catch (error) {
     const apiError = error instanceof JumioApiError ? error : null;
     const reason = apiError?.message ?? "Could not start identity verification.";

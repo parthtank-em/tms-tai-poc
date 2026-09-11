@@ -107,9 +107,9 @@ export default async function JumioDashboardPage() {
           <p className="text-sm text-muted-foreground">
             {drivers.length} {drivers.length === 1 ? "driver" : "drivers"}
           </p>
-          <Button variant="outline" size="sm" render={<Link href="/jumio-dashboard/documents" />}>
-            Document check
-          </Button>
+          {/* The document-check screen is still reachable at
+              /jumio-dashboard/documents — it is just not advertised here, since
+              identity verification is the only flow in scope for now. */}
           <AddDriverDialog />
         </div>
       </header>

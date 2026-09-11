@@ -29,6 +29,8 @@ const CONFIG: JumioConfig = {
   appUrl: "https://example.test",
   userAgent: "FreightID Test/1.0",
   tokenLifetime: null,
+  acquisitionChannel: "sdk",
+  sdkDatacenter: "us",
 };
 
 function tokenResponse(token: string, expiresIn = 3600) {

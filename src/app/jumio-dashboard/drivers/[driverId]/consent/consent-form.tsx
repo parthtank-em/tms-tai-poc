@@ -1,26 +1,42 @@
 "use client";
 
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useState } from "react";
 
+import { JumioWebSdk } from "@/components/jumio/web-sdk";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+
+import type { JumioAcquisition } from "@/lib/jumio/acquisition";
 
 /**
  * Consent, then hand off to Jumio (§9, §10).
  *
  * The button is disabled until the box is ticked, and the API refuses the call
- * without `consent: true` as well — the server does not trust this component to
- * be the only way in.
+ * without `consent: true` as well — the server does not trust this component
+ * to be the only way in.
  *
- * On success the browser navigates to Jumio's Web Client. Nothing about that
- * redirect implies a result: the driver comes back through a return page that
- * reads the verification state, and the state itself only ever moves on a
- * callback.
+ * What happens next is the server's decision, carried in `acquisition`: the
+ * SDK opens the capture screens over this page, or the browser navigates to
+ * Jumio's hosted Web Client. Neither ending is a result — the driver lands on
+ * the verification page, which reads the database.
  */
+
+type StartResponse = {
+  verificationId?: string;
+  acquisition?: JumioAcquisition;
+  error?: string;
+};
+
+type SdkAcquisition = Extract<JumioAcquisition, { channel: "sdk" }>;
+
 export function ConsentForm({ driverId, driverName }: { driverId: string; driverName: string }) {
+  const router = useRouter();
   const [consented, setConsented] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [verificationId, setVerificationId] = useState<string | null>(null);
+  const [sdk, setSdk] = useState<SdkAcquisition | null>(null);
 
   async function start() {
     setSubmitting(true);
@@ -33,21 +49,57 @@ export function ConsentForm({ driverId, driverName }: { driverId: string; driver
         body: JSON.stringify({ driverId, consent: true }),
       });
 
-      const payload = (await response.json()) as { redirectUrl?: string; error?: string };
+      const payload = (await response.json()) as StartResponse;
 
-      if (!response.ok || !payload.redirectUrl) {
+      if (!response.ok || !payload.acquisition || !payload.verificationId) {
         setError(payload.error ?? "Could not start identity verification. Please try again.");
         setSubmitting(false);
         return;
       }
 
-      // Leaving the app entirely — no state to clean up, and `submitting` stays
-      // true so the button cannot be pressed twice during navigation.
-      window.location.assign(payload.redirectUrl);
+      if (payload.acquisition.channel === "redirect") {
+        // Leaving the app entirely — no state to clean up, and `submitting`
+        // stays true so the button cannot be pressed twice during navigation.
+        window.location.assign(payload.acquisition.redirectUrl);
+        return;
+      }
+
+      setVerificationId(payload.verificationId);
+      setSdk(payload.acquisition);
     } catch {
       setError("Could not reach FreightID. Check your connection and try again.");
       setSubmitting(false);
     }
+  }
+
+  // Success, failure and cancel all land on the verification page: it is the
+  // one screen that reads the real state, so it cannot report something the
+  // database does not say — including "still waiting" after a cancel.
+  // `useCallback` because JumioWebSdk rebuilds itself when this changes.
+  const finish = useCallback(() => {
+    router.push(`/jumio-dashboard/verifications/${verificationId}`);
+  }, [router, verificationId]);
+
+  if (sdk) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col bg-background">
+        <div className="flex items-center justify-between gap-4 border-b px-4 py-2">
+          <p className="truncate text-sm font-medium">Verifying {driverName}</p>
+          <Button variant="ghost" size="sm" onClick={finish}>
+            Cancel
+          </Button>
+        </div>
+
+        <div className="min-h-0 flex-1">
+          <JumioWebSdk
+            token={sdk.token}
+            datacenter={sdk.datacenter}
+            locale={sdk.locale}
+            onDone={finish}
+          />
+        </div>
+      </div>
+    );
   }
 
   return (

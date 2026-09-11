@@ -6,7 +6,8 @@ code does it today: endpoints, payloads, and the rows each step writes.
 Companion to `Jumio_Implementation_Plan.md`, which is the specification. This document
 is the description of what was actually built.
 
-Reflects branch `jumio-integration` at commit `4c58ef3`.
+Reflects branch `jumio-integration-sdk` at commit `c19f2d3`, plus the Web SDK
+acquisition channel.
 
 ---
 
@@ -53,7 +54,7 @@ a callback Jumio initiates. Only the first table below is data we choose to disc
 | `userReference` | Our driver UUID — opaque | Account create |
 | `workflowDefinition.key` | Which checks to run | Account create |
 | `callbackUrl` | Where to notify us, plus our shared secret | Account create |
-| `web.successUrl` / `web.errorUrl` | Where to send the browser back | Account create |
+| `web.successUrl` / `web.errorUrl` | Where to send the browser back (redirect channel) | Account create |
 | `web.locale` | Language for the capture screens | Account create |
 | `userConsent.userIp` | The consenting user's IP address | Account create |
 | `userConsent.userLocation` | Country (ISO 3166-1 alpha-3) and, for the USA, state | Account create |
@@ -82,7 +83,8 @@ identifies a driver on its own.
 | `capabilities.similarity[].data` | Selfie matches the ID, or does not | Retrieval |
 | `capabilities.liveness[].decision` | A real person was present | Retrieval |
 | `credentials[].parts[].href` | Links to the ID scan and selfie | Retrieval |
-| `acquisitionStatus`, `errorCode` | How the capture journey ended | Browser redirect |
+| `acquisitionStatus`, `errorCode` | How the capture journey ended | Browser redirect (redirect channel) |
+| `workflow:success` / `workflow:failed` | How the capture journey ended | Web SDK event (SDK channel) |
 
 **Received but deliberately dropped:** the image links are never followed and never
 stored, so no ID scan or selfie enters our database. The redirect parameters are read
@@ -241,8 +243,15 @@ Response:
 }
 ```
 
-`sdk.token` is unused today — it is what a Web SDK build would consume instead of
-`web.href`.
+Both acquisition handles come back from the one call. Which of them reaches the
+browser is `NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL`'s decision, made on the server:
+
+- `sdk` (default) — `sdk.token`, redeemed by the embedded Web SDK.
+- `redirect` — `web.href`, the hosted Web Client URL.
+
+`sdk.token` is absent when the workflow definition does not have the SDK
+acquisition channel enabled in Jumio's Workflow Designer. The start call then
+fails with a generic message; the server log names the fix.
 
 ```sql
 UPDATE driver_verifications
@@ -253,11 +262,26 @@ UPDATE driver_verifications
 UPDATE drivers SET verification_status = 'PENDING' WHERE id = <driverId>;
 ```
 
-Returned to the browser:
+Returned to the browser, on the SDK channel:
 
 ```json
-{ "redirectUrl": "<web.href>", "verificationId": "<uuid>" }
+{
+  "verificationId": "<uuid>",
+  "acquisition": { "channel": "sdk", "token": "<sdk.token>", "datacenter": "us", "locale": "en" }
+}
 ```
+
+and on the redirect channel:
+
+```json
+{
+  "verificationId": "<uuid>",
+  "acquisition": { "channel": "redirect", "redirectUrl": "<web.href>" }
+}
+```
+
+Never both. The SDK token is the only Jumio credential that crosses to the
+browser, it authorizes one workflow execution, and it is never stored or logged.
 
 **If Jumio rejects the call:** the row is updated to `status = 'FAILED'` with the
 sanitized reason and `completed_at` set — a real record of a failed start, never a
@@ -266,18 +290,59 @@ log with our secrets stripped out.
 
 ## Step 7 — Capture on Jumio's screens
 
+Jumio handles the document scan, the selfie and the liveness prompt either way.
+FreightID never touches a camera and never receives an image.
+
+### 7a — SDK channel (default)
+
+- **Browser:** `src/components/jumio/web-sdk.tsx`, mounted over the consent page
+
+The capture screens open in place as a custom element — `<jumio-sdk dc="us"
+token="…" locale="en">` — so the driver never leaves FreightID.
+
+The SDK comes straight from the npm package: `await import("@jumio/websdk")`
+inside the effect, which registers the custom element as a side effect. The
+import is dynamic because the module reaches for `document` as it evaluates,
+and because it keeps the 2.2 MB SDK core out of the consent page's initial
+bundle — that chunk is fetched only when a driver presses **Continue**. The
+stylesheet is a plain static import (`@jumio/websdk/assets/style.css`); its
+icons are inlined as `data:` URIs, so it pulls in no extra files.
+
+Turbopack resolves the SDK's runtime asset lookups — the wasm decoder and the
+two ML model bundles, fetched with `new URL("../assets/ml/...", import.meta.url)`
+— and emits them to `/_next/static/media/`. Worth re-checking after an SDK
+upgrade, because a miss there would not fail the build; it would 404 the first
+time a camera opens:
+
+```bash
+npm run build && ls .next/static/media
+```
+
+The element emits bubbling, composed events. Two are listened for:
+
+| Event | Means | What we do |
+| --- | --- | --- |
+| `workflow:success` | The driver reached the end of the screens | Navigate to the verification page |
+| `workflow:failed` | Jumio gave up on this journey | Navigate to the verification page |
+
+Cancelling does the same thing. All three land on the page that reads the
+database, so none of them can report an outcome the database does not hold.
+
+### 7b — Redirect channel
+
 - **Browser:** `window.location.assign(redirectUrl)`
 
-Jumio's hosted Web Client handles the document scan, the selfie and the liveness
-prompt. FreightID never touches a camera and never receives an image.
+Jumio's hosted Web Client takes over. When the driver finishes, Jumio sends the
+browser back to the success or error URL — both of which point at the same page.
+Jumio appends its own query parameters (`acquisitionStatus`, `errorCode`,
+`transactionStatus`); ours carry none, because Jumio rejects success/error URLs
+that contain a query string.
 
-When the driver finishes, Jumio sends the browser back to the success or error URL —
-both of which point at the same page. Jumio appends its own query parameters
-(`acquisitionStatus`, `errorCode`, `transactionStatus`); ours carry none, because Jumio
-rejects success/error URLs that contain a query string.
+### Either way
 
-**Arriving back on the success URL means the driver finished the screens. Nothing
-more.** The page reads the database; the redirect is never trusted.
+**Finishing the capture screens means the driver finished the screens. Nothing
+more.** The page reads the database; neither the redirect nor the SDK event is
+ever trusted as a result.
 
 ## Step 8 — The callback arrives
 
@@ -506,6 +571,7 @@ reading the same row through a fuller view.
 | `JUMIO_CALLBACK_ENFORCE_IP` | `true` in a real deployment | Rejects callbacks from unpublished IPs |
 | `JUMIO_CONSENT_COUNTRY` / `JUMIO_CONSENT_STATE` | You set it, or platform geolocation | The mandatory consent record |
 | `NEXT_PUBLIC_APP_URL` | Your deployment's public origin | Building the Web Client return URLs |
+| `NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL` | `sdk` (default) or `redirect` | Which acquisition handle the browser is given |
 
 See `.env.example` for the full annotated list.
 
@@ -524,12 +590,13 @@ src/lib/jumio/
 ├── mapper.ts          Jumio response → FreightID representation
 ├── presenter.ts       FreightID representation → API/UI shape
 ├── consent.ts         consent location resolution
+├── acquisition.ts     the one Jumio shape the browser may know (types only)
 └── verification.ts    the service: the only module that writes verification state
 
 src/app/api/jumio/     start · callback · status
 src/app/jumio-dashboard/  dashboard, driver profile, consent, result pages
-src/components/jumio/  Jumio-specific badges
+src/components/jumio/  verification badges · web-sdk.tsx (the embedded Web SDK)
 ```
 
-Tests: `npm test` (69 unit tests, offline) and `npm run test:integration`
-(19 tests against a throwaway Neon branch — see `TEST_DATABASE_URL` in `.env.example`).
+Tests: `npm test` (84 unit tests, offline) and `npm run test:integration`
+(21 tests against a throwaway Neon branch — see `TEST_DATABASE_URL` in `.env.example`).

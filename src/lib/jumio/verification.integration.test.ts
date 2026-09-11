@@ -59,7 +59,10 @@ function stubClient(overrides: {
       (async () => ({
         account: { id: `acc-${crypto.randomUUID()}` },
         workflowExecution: { id: `wf-${crypto.randomUUID()}` },
+        // A real account reply carries both acquisition handles; the suite runs
+        // on the SDK channel, so `sdk.token` is the one that has to be there.
         web: { href: "https://web.amer-1.jumio.ai/web/client?authorizationToken=jwt" },
+        sdk: { token: `sdk-${crypto.randomUUID()}` },
       })),
     retrieveWorkflow: overrides.retrieveWorkflow ?? (async () => ({})),
   } as unknown as JumioClient;
@@ -144,7 +147,7 @@ afterAll(async () => {
 });
 
 describe("start verification", () => {
-  it("creates the Jumio account, persists the identifiers and returns the Web Client URL", async () => {
+  it("creates the Jumio account, persists the identifiers and returns the SDK token", async () => {
     const driverId = await createDriver();
 
     const result = await startDriverVerification(
@@ -156,6 +159,7 @@ describe("start verification", () => {
             account: { id: "acc-integration-1" },
             workflowExecution: { id: "wf-integration-1" },
             web: { href: "https://web.amer-1.jumio.ai/web/client?authorizationToken=jwt" },
+            sdk: { token: "sdk-token" },
           };
         },
       }),
@@ -164,7 +168,12 @@ describe("start verification", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.redirectUrl).toContain("authorizationToken");
+    expect(result.acquisition).toEqual({
+      channel: "sdk",
+      token: "sdk-token",
+      datacenter: "us",
+      locale: "en",
+    });
 
     const stored = await prisma.driverVerification.findUniqueOrThrow({
       where: { id: result.verificationId },
@@ -197,6 +206,7 @@ describe("start verification", () => {
             account: { id: "acc-2" },
             workflowExecution: { id: "wf-2" },
             web: { href: "https://web.amer-1.jumio.ai/web/client" },
+            sdk: { token: "sdk-token" },
           };
         },
       }),
@@ -273,6 +283,73 @@ describe("start verification", () => {
     if (result.ok) return;
     expect(result.reason).toBe("Driver not found.");
   });
+
+  it("fails the start when the workflow has no SDK channel enabled", async () => {
+    const driverId = await createDriver();
+
+    // Exactly what Jumio answers when the workflow definition offers the Web
+    // Client but not the SDK: a complete, successful reply with no `sdk` block.
+    const result = await startDriverVerification(
+      driverId,
+      CONSENT,
+      stubClient({
+        async createAccount() {
+          return {
+            account: { id: "acc-no-sdk" },
+            workflowExecution: { id: "wf-no-sdk" },
+            web: { href: "https://web.amer-1.jumio.ai/web/client" },
+          };
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    // The operator's fix names an environment variable, so it belongs in the
+    // log, not in the message the row and the browser get (§20).
+    expect(result.reason).not.toContain("JUMIO_ACQUISITION_CHANNEL");
+
+    const stored = await latestVerification(driverId);
+    expect(stored?.status).toBe("FAILED");
+
+    const driver = await prisma.driver.findUniqueOrThrow({ where: { id: driverId } });
+    expect(driver.verificationStatus).toBe("UNVERIFIED");
+  });
+
+  it("hands back the Web Client URL on the redirect channel", async () => {
+    const driverId = await createDriver();
+    process.env.NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL = "redirect";
+
+    try {
+      const result = await startDriverVerification(
+        driverId,
+        CONSENT,
+        stubClient({
+          async createAccount() {
+            return {
+              account: { id: "acc-redirect" },
+              workflowExecution: { id: "wf-redirect" },
+              web: { href: "https://web.amer-1.jumio.ai/web/client?authorizationToken=jwt" },
+              sdk: { token: "sdk-token" },
+            };
+          },
+        }),
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // Both handles were on the wire; only the configured one comes back, so
+      // the SDK token never reaches a browser that has no SDK to redeem it.
+      expect(result.acquisition).toEqual({
+        channel: "redirect",
+        redirectUrl: "https://web.amer-1.jumio.ai/web/client?authorizationToken=jwt",
+      });
+    } finally {
+      process.env.NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL = "sdk";
+    }
+  });
 });
 
 describe("callback into retrieval", () => {
@@ -290,6 +367,7 @@ describe("callback into retrieval", () => {
             account: { id: `acc-${crypto.randomUUID()}` },
             workflowExecution: { id: workflowId },
             web: { href: "https://web.amer-1.jumio.ai/web/client" },
+            sdk: { token: "sdk-token" },
           };
         },
       }),
@@ -431,6 +509,7 @@ describe("duplicate callbacks", () => {
             account: { id: "acc-dup" },
             workflowExecution: { id: workflowId },
             web: { href: "https://web.amer-1.jumio.ai/web/client" },
+            sdk: { token: "sdk-token" },
           };
         },
       }),
@@ -462,6 +541,7 @@ describe("duplicate callbacks", () => {
             account: { id: "acc-seq" },
             workflowExecution: { id: workflowId },
             web: { href: "https://web.amer-1.jumio.ai/web/client" },
+            sdk: { token: "sdk-token" },
           };
         },
       }),
@@ -541,6 +621,7 @@ describe("expired sessions and out-of-order callbacks", () => {
             account: { id: "acc-exp" },
             workflowExecution: { id: workflowId },
             web: { href: "https://web.amer-1.jumio.ai/web/client" },
+            sdk: { token: "sdk-token" },
           };
         },
       }),

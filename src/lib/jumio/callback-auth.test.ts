@@ -23,6 +23,8 @@ const CONFIG: JumioConfig = {
   appUrl: "https://example.test",
   userAgent: "FreightID Test/1.0",
   tokenLifetime: null,
+  acquisitionChannel: "sdk",
+  sdkDatacenter: "us",
 };
 
 const JUMIO_US_IP = "34.202.241.227";

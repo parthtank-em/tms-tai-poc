@@ -298,17 +298,32 @@ Implementation:
 7. Provide the Web Client success/error URLs.
 8. Provide the required consent information.
 9. Persist the Jumio account/workflow identifiers.
-10. Return the Jumio Web Client URL.
+10. Return the acquisition handle for the configured channel (§10).
 
-Return:
+Return, on the Web SDK channel:
 
 ```json
 {
-  "redirectUrl": "..."
+  "verificationId": "...",
+  "acquisition": { "channel": "sdk", "token": "...", "datacenter": "us", "locale": "en" }
 }
 ```
 
-Do not return Jumio credentials or access tokens.
+Return, on the redirect channel:
+
+```json
+{
+  "verificationId": "...",
+  "acquisition": { "channel": "redirect", "redirectUrl": "..." }
+}
+```
+
+Do not return Jumio tenant credentials or the OAuth access token.
+
+The SDK token is the one exception, and only on the SDK channel: it is the
+browser-side credential the Web SDK exists to redeem, it authorizes exactly one
+workflow execution, and it expires with the transaction. It is never persisted,
+never logged, and never placed in a URL.
 
 ### Important reference identifiers
 
@@ -357,17 +372,39 @@ When the user continues:
 
 ---
 
-# 10. Redirect to Jumio Web Client
+# 10. Acquisition: Web SDK or Web Client
 
-After `/api/jumio/start` returns:
+One account call answers with both handles — `sdk.token` and `web.href` — so the
+acquisition channel is a deployment choice, not an API one. It is set by
+`NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL` and decided **on the server**;
+`/api/jumio/start` returns only the handle for the configured channel, so the
+browser never holds a credential for a channel it is not using.
 
-```json
-{
-  "redirectUrl": "..."
-}
+## 10.1 Web SDK (default)
+
+Jumio's Web SDK is a custom element. The driver stays on a FreightID page and
+the capture screens open over it:
+
+```html
+<jumio-sdk dc="us" token="..." locale="en"></jumio-sdk>
 ```
 
-the frontend should redirect:
+The module is imported from the npm package — `await import("@jumio/websdk")`,
+dynamically, so the SDK core stays out of the page's initial bundle and never
+evaluates during server rendering. The bundler resolves the SDK's runtime asset
+lookups (`new URL("../assets/ml/dac.wasm", import.meta.url)`) and emits them
+alongside the app's own static assets.
+
+The element emits `workflow:start`, `workflow:success`, `workflow:failed` and
+`workflow:retry`, all bubbling and composed.
+
+This channel requires the SDK acquisition channel to be enabled on the workflow
+definition in Jumio's Workflow Designer. Without it the account reply carries no
+`sdk.token` and the start call fails.
+
+## 10.2 Redirect to Jumio Web Client
+
+The frontend navigates away instead:
 
 ```ts
 window.location.assign(redirectUrl);
@@ -375,7 +412,12 @@ window.location.assign(redirectUrl);
 
 Do not embed secrets in the URL.
 
-Do not assume that returning to the success URL means verification passed.
+## 10.3 Either way
+
+Do not assume that returning to the success URL — or that the SDK emitting
+`workflow:success` — means verification passed. Both mean only that the driver
+reached the end of the capture screens. The result comes from the callback plus
+retrieval, and from nowhere else.
 
 ---
 

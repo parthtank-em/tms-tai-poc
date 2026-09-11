@@ -35,3 +35,7 @@ process.env.JUMIO_DATACENTER = "amer-1";
 process.env.JUMIO_WORKFLOW_KEY = "10549";
 process.env.JUMIO_CALLBACK_SECRET = "test-callback-secret";
 process.env.NEXT_PUBLIC_APP_URL = "https://example.test";
+// Pinned, not defaulted: `loadEnv()` above has already pulled in the
+// developer's own `.env`, and the channel decides which half of the account
+// reply `startDriverVerification` insists on.
+process.env.NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL = "sdk";

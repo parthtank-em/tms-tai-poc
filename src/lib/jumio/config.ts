@@ -17,9 +17,21 @@
  * @see https://documentation.jumio.ai/docs/developer-resources/API/authorization
  */
 
+import type { JumioAcquisitionChannel, JumioSdkDatacenter } from "./acquisition";
+
 export type JumioDatacenter = "amer-1" | "emea-1" | "apac-1";
 
 const DATACENTERS: readonly JumioDatacenter[] = ["amer-1", "emea-1", "apac-1"];
+
+/** The REST datacenter, in the spelling `<jumio-sdk dc="…">` expects. */
+const SDK_DATACENTERS: Record<JumioDatacenter, JumioSdkDatacenter> = {
+  "amer-1": "us",
+  "emea-1": "eu",
+  "apac-1": "sgp",
+};
+
+/** Capture-screen language. A constant, not a setting — the SDK has its own language selector. */
+export const JUMIO_LOCALE = "en";
 
 /**
  * A configuration problem, not a Jumio problem.
@@ -65,6 +77,10 @@ export type JumioConfig = {
   userAgent: string;
   /** Optional Web Client token lifetime, e.g. `30m`. Jumio's default applies when unset. */
   tokenLifetime: string | null;
+  /** Whether the browser embeds the Web SDK or redirects to the Web Client. */
+  acquisitionChannel: JumioAcquisitionChannel;
+  /** `datacenter` in the spelling the Web SDK's `dc` attribute expects. */
+  sdkDatacenter: JumioSdkDatacenter;
 };
 
 function read(name: string): string | null {
@@ -94,6 +110,19 @@ function resolveDatacenter(): JumioDatacenter {
   }
 
   return value as JumioDatacenter;
+}
+
+/** Defaults to the SDK; `redirect` falls back to the hosted Web Client without a code change. */
+function resolveAcquisitionChannel(): JumioAcquisitionChannel {
+  const value = read("NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL") ?? "sdk";
+
+  if (value !== "sdk" && value !== "redirect") {
+    throw new JumioConfigError(
+      `NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL must be "sdk" or "redirect" — got "${value}".`,
+    );
+  }
+
+  return value;
 }
 
 /**
@@ -131,6 +160,8 @@ export function getJumioConfig(): JumioConfig {
     appUrl,
     userAgent: read("JUMIO_USER_AGENT") ?? "FreightID FreightID-POC/1.0",
     tokenLifetime: read("JUMIO_TOKEN_LIFETIME"),
+    acquisitionChannel: resolveAcquisitionChannel(),
+    sdkDatacenter: SDK_DATACENTERS[datacenter],
   };
 }
 

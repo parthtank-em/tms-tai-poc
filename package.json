@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
+    "@jumio/websdk": "^0.6.2",
     "@neondatabase/serverless": "^1.1.0",
     "@prisma/adapter-neon": "^7.10.0",
     "@prisma/client": "^7.10.0",

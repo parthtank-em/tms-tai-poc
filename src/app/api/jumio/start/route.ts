@@ -6,9 +6,11 @@ import { startDriverVerification } from "@/lib/jumio/verification";
 /**
  * `POST /api/jumio/start` — begin identity verification for a driver (§8).
  *
- * Returns the Jumio Web Client URL for the browser to navigate to. It never
- * returns a token, an account id, or anything else Jumio-side: the response is
- * one URL and nothing more.
+ * Returns an `acquisition` object — the SDK token on the SDK channel, the Web
+ * Client URL on the redirect channel, decided by the server. Nothing else
+ * Jumio-side crosses back: no account id, no workflow id, no tenant
+ * credential. The SDK token is the exception because the Web SDK is what
+ * redeems it; it covers one workflow execution and expires with it.
  *
  * Consent must already have been given on the FreightID consent screen; this
  * endpoint records when, and from where, and refuses without it (§9).
@@ -74,5 +76,8 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: result.reason, retryable: result.retryable }, { status: 502 });
   }
 
-  return Response.json({ redirectUrl: result.redirectUrl, verificationId: result.verificationId });
+  return Response.json({
+    verificationId: result.verificationId,
+    acquisition: result.acquisition,
+  });
 }

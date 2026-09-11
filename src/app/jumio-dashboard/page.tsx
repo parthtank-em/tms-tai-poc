@@ -98,7 +98,7 @@ export default async function JumioDashboardPage() {
   // Only a driver whose registration actually passed has a facemap to compare a
   // pickup selfie against.
   const pickupDrivers = drivers
-    .filter((driver) => driver.verificationStatus === "VERIFIED")
+    // .filter((driver) => driver.verificationStatus === "VERIFIED")
     .map((driver) => ({ id: driver.id, name: driver.name }));
 
   return (

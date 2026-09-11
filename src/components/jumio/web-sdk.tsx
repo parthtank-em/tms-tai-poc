@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import "@jumio/websdk/assets/style.css";
+import "./web-sdk-theme.css";
 
 import type { JumioSdkDatacenter } from "@/lib/jumio/acquisition";
 

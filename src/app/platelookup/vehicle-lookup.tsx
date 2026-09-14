@@ -108,10 +108,17 @@ export function VehicleLookup() {
               autoFocus
               disabled={pending}
               aria-invalid={invalid || undefined}
-              aria-describedby={failure ? "lookup-error" : undefined}
+              aria-describedby={failure ? "lookup-error" : "lookup-hint"}
               className="h-9 w-64 uppercase"
             />
           </div>
+
+          {/*
+            The two ways to identify a vehicle are alternatives, not a single
+            three-part form. `h-9` matches the inputs so "or" sits on their line
+            rather than on the labels above them.
+          */}
+          <span className="flex h-9 items-center px-1 text-sm text-muted-foreground">or</span>
 
           <div className="space-y-1.5">
             <Label htmlFor="state">State</Label>
@@ -125,7 +132,7 @@ export function VehicleLookup() {
               maxLength={2}
               disabled={pending}
               aria-invalid={invalid || undefined}
-              aria-describedby={failure ? "lookup-error" : undefined}
+              aria-describedby={failure ? "lookup-error" : "lookup-hint"}
               className="h-9 w-20 uppercase"
             />
           </div>
@@ -141,7 +148,7 @@ export function VehicleLookup() {
               placeholder="9247DG"
               disabled={pending}
               aria-invalid={invalid || undefined}
-              aria-describedby={failure ? "lookup-error" : undefined}
+              aria-describedby={failure ? "lookup-error" : "lookup-hint"}
               className="h-9 w-40 uppercase"
             />
           </div>
@@ -151,8 +158,14 @@ export function VehicleLookup() {
           </Button>
         </div>
 
-        <p className="text-xs text-muted-foreground">
-          A VIN on its own is enough. A plate needs the state it was issued in.
+        {/*
+          The "or" separator is visual only — it sits between fields, so a
+          screen reader moving field to field never reaches it. Every input
+          points here instead, which is also where the plate/state pairing rule
+          is spelled out.
+        */}
+        <p id="lookup-hint" className="text-xs text-muted-foreground">
+          Enter a VIN, or a state and plate together. Either identifies the vehicle on its own.
         </p>
       </form>
 

@@ -4,59 +4,41 @@ import { useActionState, useState } from "react";
 
 import { lookupCarrierAction, type CarrierLookupState } from "./actions";
 
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { Badge } from "@/components/ui/badge";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { FmcsaCarrier } from "@/lib/fmcsa/client";
 
 const INITIAL: CarrierLookupState = { status: "idle" };
 
-/** Elements only appear when they have a value, so a gap is normal here. */
-function value(text: string | number | null): string {
-  if (text === null || text === "") return "—";
-  return String(text);
-}
+/** FMCSA omits any element with no value, so a gap here is normal. */
+const EMPTY = "—";
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-0.5">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="text-sm">{children}</dd>
-    </div>
-  );
-}
-
-/**
- * "Allowed to operate" is the one field an operator acts on, so it reads as a
- * badge rather than a Y/N buried in a list. An absent value is left blank
- * instead of being guessed either way.
- */
-function OperatingBadge({ carrier }: { carrier: FmcsaCarrier }) {
-  const allowed = carrier.allowToOperate?.toUpperCase();
-  const outOfService = carrier.outOfService?.toUpperCase() === "Y";
-
-  if (outOfService) {
-    return <Badge variant="destructive">Out of service</Badge>;
-  }
-
-  if (allowed === "Y") return <Badge variant="secondary">Allowed to operate</Badge>;
-  if (allowed === "N") return <Badge variant="destructive">Not allowed to operate</Badge>;
-
-  return <Badge variant="outline">Operating status not reported</Badge>;
-}
-
-function CarrierAddress({ carrier }: { carrier: FmcsaCarrier }) {
+/** One line per address part, skipping the parts FMCSA did not return. */
+function formatAddress(carrier: FmcsaCarrier): string | null {
   const locality = [carrier.phyCity, carrier.phyState, carrier.phyZip].filter(Boolean).join(", ");
   const lines = [carrier.phyStreet, locality, carrier.phyCountry].filter(Boolean);
 
-  if (lines.length === 0) return <>—</>;
+  return lines.length > 0 ? lines.join("\n") : null;
+}
 
-  return (
-    <span className="whitespace-pre-line">{lines.join("\n")}</span>
-  );
+function carrierFields(carrier: FmcsaCarrier): [label: string, value: string | null][] {
+  return [
+    ["Company Legal Name", carrier.legalName],
+    ["Company DBA Name", carrier.dbaName],
+    ["Business AIN (Tax ID)", carrier.businessAin],
+    ["Business Type", carrier.businessType],
+    ["Physical Address", formatAddress(carrier)],
+    ["Allowed to operate", carrier.allowToOperate],
+    ["Out of service", carrier.outOfService],
+  ];
 }
 
 function CarrierResult({
@@ -68,60 +50,23 @@ function CarrierResult({
   raw: unknown;
   retrievalDate: string | null;
 }) {
-  const vehicles: [string, number | null][] = [
-    ["Buses", carrier.busVehicle],
-    ["Limousines", carrier.limoVehicle],
-    ["Mini-buses", carrier.miniBusVehicle],
-    ["Motorcoaches", carrier.motorCoachVehicle],
-    ["Vans", carrier.vanVehicle],
-    ["Passenger vehicles", carrier.passengerVehicle],
-  ];
-
-  const reportedVehicles = vehicles.filter(([, count]) => count !== null);
-
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-xl">{value(carrier.legalName)}</CardTitle>
-        <CardDescription>
-          {carrier.dbaName ? `DBA ${carrier.dbaName} · ` : ""}
-          USDOT {value(carrier.dotNumber)}
-          {carrier.mcNumber ? ` · MC ${carrier.mcNumber}` : ""}
-        </CardDescription>
-        <div className="mt-2">
-          <OperatingBadge carrier={carrier} />
-        </div>
-      </CardHeader>
-
       <CardContent className="space-y-6">
-        <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <Field label="Physical address">
-            <CarrierAddress carrier={carrier} />
-          </Field>
-          <Field label="Telephone">{value(carrier.telephone)}</Field>
-          <Field label="Complaints">{value(carrier.complaintCount)}</Field>
-          <Field label="Out of service">{value(carrier.outOfService)}</Field>
-          <Field label="Out of service date">{value(carrier.outOfServiceDate)}</Field>
-          <Field label="Allowed to operate">{value(carrier.allowToOperate)}</Field>
+        <dl className="divide-y">
+          {carrierFields(carrier).map(([label, fieldValue]) => (
+            <div key={label} className="grid gap-0.5 py-2.5 sm:grid-cols-[15rem_1fr] sm:gap-4">
+              <dt className="text-muted-foreground">{label}</dt>
+              {/* Only the address is multi-line; the rest collapse to one. */}
+              <dd className="whitespace-pre-line">{fieldValue ?? EMPTY}</dd>
+            </div>
+          ))}
         </dl>
 
-        {reportedVehicles.length > 0 && (
-          <div>
-            <h3 className="mb-2 text-xs font-medium text-muted-foreground">Fleet</h3>
-            <dl className="grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
-              {reportedVehicles.map(([label, count]) => (
-                <Field key={label} label={label}>
-                  {value(count)}
-                </Field>
-              ))}
-            </dl>
-          </div>
-        )}
-
         {/*
-          FMCSA returns more elements than the summary above names, and which
-          ones arrive varies by carrier. Keeping the raw body one click away
-          means a missing field can be checked without re-running the call.
+          FMCSA returns more elements than the list above names, and which ones
+          arrive varies by carrier. Keeping the raw body one click away means a
+          missing field can be checked without re-running the call.
         */}
         <Accordion>
           <AccordionItem value="raw">

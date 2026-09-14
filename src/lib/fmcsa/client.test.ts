@@ -53,34 +53,35 @@ describe("normalizeDotNumber", () => {
 });
 
 describe("normalizeCarrier", () => {
-  it("maps the documented elements", () => {
+  it("maps the displayed elements", () => {
     const carrier = normalizeCarrier({
-      dotNumber: 44110,
       legalName: "GREYHOUND LINES INC",
       dbaName: "GREYHOUND",
       allowToOperate: "Y",
-      complaintCount: 3,
+      outOfService: "N",
+      phyStreet: "350 N ST PAUL ST",
       phyCity: "DALLAS",
       phyState: "TX",
-      telephone: "2148495000",
+      phyZip: "75201",
+      phyCountry: "US",
     });
 
-    expect(carrier.dotNumber).toBe(44110);
     expect(carrier.legalName).toBe("GREYHOUND LINES INC");
     expect(carrier.dbaName).toBe("GREYHOUND");
     expect(carrier.allowToOperate).toBe("Y");
-    expect(carrier.complaintCount).toBe(3);
+    expect(carrier.outOfService).toBe("N");
+    expect(carrier.phyStreet).toBe("350 N ST PAUL ST");
     expect(carrier.phyCity).toBe("DALLAS");
-    expect(carrier.telephone).toBe("2148495000");
+    expect(carrier.phyZip).toBe("75201");
   });
 
-  it("leaves omitted elements null rather than inventing a zero", () => {
-    const carrier = normalizeCarrier({ dotNumber: 44110 });
+  it("leaves omitted elements null rather than inventing a value", () => {
+    const carrier = normalizeCarrier({ legalName: "GREYHOUND LINES INC" });
 
-    expect(carrier.complaintCount).toBeNull();
-    expect(carrier.busVehicle).toBeNull();
-    expect(carrier.legalName).toBeNull();
-    expect(carrier.outOfServiceDate).toBeNull();
+    expect(carrier.dbaName).toBeNull();
+    expect(carrier.businessAin).toBeNull();
+    expect(carrier.businessType).toBeNull();
+    expect(carrier.outOfService).toBeNull();
   });
 
   it("accepts either spelling where the docs and live responses differ", () => {
@@ -88,9 +89,21 @@ describe("normalizeCarrier", () => {
     expect(normalizeCarrier({ phyZipcode: "75201" }).phyZip).toBe("75201");
   });
 
-  it("coerces numbers sent as strings", () => {
-    expect(normalizeCarrier({ dotNumber: "44110" }).dotNumber).toBe(44110);
-    expect(normalizeCarrier({ complaintCount: "0" }).complaintCount).toBe(0);
+  it("reads the tax id from ein, which the element docs do not list", () => {
+    expect(normalizeCarrier({ ein: 741123456 }).businessAin).toBe("741123456");
+    expect(normalizeCarrier({ businessAin: "74-1123456" }).businessAin).toBe("74-1123456");
+  });
+
+  it("reads the business type from the nested census entry", () => {
+    expect(
+      normalizeCarrier({ censusTypeId: { censusTypeDesc: "CARRIER", censusType: "C" } })
+        .businessType,
+    ).toBe("CARRIER");
+    expect(normalizeCarrier({ entityType: "BROKER" }).businessType).toBe("BROKER");
+  });
+
+  it("ignores a nested element that is not an object", () => {
+    expect(normalizeCarrier({ censusTypeId: 7 }).businessType).toBeNull();
   });
 });
 

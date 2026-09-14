@@ -29,28 +29,21 @@ const DOT_NUMBER_PATTERN = /^\d{1,8}$/;
  * `complaintCount` key rather than a zero — absence is normal, not an error.
  */
 export type FmcsaCarrier = {
-  dotNumber: number | null;
-  mcNumber: string | null;
   legalName: string | null;
   dbaName: string | null;
-  /** "Y" or "N" — whether the carrier is allowed to operate by law. */
-  allowToOperate: string | null;
-  /** "Y" or "N" — whether an out-of-service order is in force. */
-  outOfService: string | null;
-  outOfServiceDate: string | null;
-  complaintCount: number | null;
-  busVehicle: number | null;
-  limoVehicle: number | null;
-  miniBusVehicle: number | null;
-  motorCoachVehicle: number | null;
-  vanVehicle: number | null;
-  passengerVehicle: number | null;
+  /** Employer tax id. Not in apiElements.pdf — see `normalizeCarrier`. */
+  businessAin: string | null;
+  /** Census entity type, e.g. "CARRIER". Not in apiElements.pdf either. */
+  businessType: string | null;
   phyStreet: string | null;
   phyCity: string | null;
   phyState: string | null;
   phyZip: string | null;
   phyCountry: string | null;
-  telephone: string | null;
+  /** "Y" or "N" — whether the carrier is allowed to operate by law. */
+  allowToOperate: string | null;
+  /** "Y" or "N" — whether an out-of-service order is in force. */
+  outOfService: string | null;
 };
 
 export type FmcsaLookupFailure =
@@ -100,13 +93,14 @@ function asString(value: unknown): string | null {
   return null;
 }
 
-function asNumber(value: unknown): number | null {
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
+/** Reads `parent.child`, for the elements FMCSA nests one level down. */
+function pickNested(
+  source: Record<string, unknown>,
+  parent: string,
+  ...children: string[]
+): unknown {
+  const value = source[parent];
+  return isRecord(value) ? pick(value, ...children) : null;
 }
 
 /**
@@ -134,35 +128,35 @@ function extractCarrier(body: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Maps the raw carrier onto the documented element names.
+ * Maps the raw carrier onto the fields the page shows.
  *
- * A few elements are spelled one way in `apiElements.pdf` and another in live
- * responses (`allowToOperate` / `allowedToOperate`, `phyZip` / `phyZipcode`),
- * so both spellings are accepted. Anything not mapped here is still visible in
- * the raw JSON the page renders alongside the summary.
+ * Three caveats, all of them the reason the raw JSON stays on screen:
+ *
+ * 1. A few elements are spelled one way in `apiElements.pdf` and another in
+ *    live responses (`allowToOperate` / `allowedToOperate`, `phyZip` /
+ *    `phyZipcode`), so both spellings are accepted.
+ * 2. The tax id and entity type are not in `apiElements.pdf` at all. FMCSA
+ *    returns them as `ein` and `censusTypeId.censusTypeDesc`; the alternates
+ *    below are guesses, not documented names.
+ * 3. Anything not mapped here is still visible in the raw response panel, so a
+ *    wrong guess shows as "—" next to the real key rather than losing data.
  */
 export function normalizeCarrier(raw: Record<string, unknown>): FmcsaCarrier {
   return {
-    dotNumber: asNumber(pick(raw, "dotNumber")),
-    mcNumber: asString(pick(raw, "mcNumber")),
     legalName: asString(pick(raw, "legalName")),
     dbaName: asString(pick(raw, "dbaName")),
-    allowToOperate: asString(pick(raw, "allowToOperate", "allowedToOperate")),
-    outOfService: asString(pick(raw, "outOfService", "oosStatus")),
-    outOfServiceDate: asString(pick(raw, "outOfServiceDate", "oosDate")),
-    complaintCount: asNumber(pick(raw, "complaintCount")),
-    busVehicle: asNumber(pick(raw, "busVehicle")),
-    limoVehicle: asNumber(pick(raw, "limoVehicle")),
-    miniBusVehicle: asNumber(pick(raw, "miniBusVehicle")),
-    motorCoachVehicle: asNumber(pick(raw, "motorCoachVehicle")),
-    vanVehicle: asNumber(pick(raw, "vanVehicle")),
-    passengerVehicle: asNumber(pick(raw, "passengerVehicle")),
+    businessAin: asString(pick(raw, "ein", "einNumber", "businessAin", "ain")),
+    businessType: asString(
+      pick(raw, "businessType", "entityType") ??
+        pickNested(raw, "censusTypeId", "censusTypeDesc", "censusType"),
+    ),
     phyStreet: asString(pick(raw, "phyStreet")),
     phyCity: asString(pick(raw, "phyCity")),
     phyState: asString(pick(raw, "phyState")),
     phyZip: asString(pick(raw, "phyZip", "phyZipcode")),
     phyCountry: asString(pick(raw, "phyCountry")),
-    telephone: asString(pick(raw, "telephone")),
+    allowToOperate: asString(pick(raw, "allowToOperate", "allowedToOperate")),
+    outOfService: asString(pick(raw, "outOfService", "oosStatus")),
   };
 }
 

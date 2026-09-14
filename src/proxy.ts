@@ -25,5 +25,11 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   // "/" is the POC index, so it is signed-in surface like the rest.
-  matcher: ["/", "/shipments/:path*", "/jumio-dashboard/:path*", "/fmcsa/:path*"],
+  matcher: [
+    "/",
+    "/shipments/:path*",
+    "/jumio-dashboard/:path*",
+    "/fmcsa/:path*",
+    "/platelookup/:path*",
+  ],
 };

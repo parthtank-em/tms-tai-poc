@@ -32,4 +32,10 @@ export const pocs: Poc[] = [
     description: "Look up a motor carrier by USDOT number against the FMCSA QCMobile API.",
     href: "/fmcsa",
   },
+  {
+    title: "PlateLookup Integration",
+    shortTitle: "PlateLookup",
+    description: "Look up a vehicle's history by VIN, or by state and plate.",
+    href: "/platelookup",
+  },
 ];

@@ -1,0 +1,348 @@
+[
+  {
+    "success": true,
+    "data": {
+      "VIN": "3GNCJLSBXLL230525",
+      "vehicle": {
+        "make": "CHEVROLET",
+        "model": "Trax",
+        "year": 2020,
+        "trim": "1LT",
+        "engine": "1.4L L4 DOHC 16V",
+        "drivetrain": "Fwd Front Wheel Drive",
+        "cylinders": "4",
+        "displacement_cc": "1400.0",
+        "fuel_type": "Gasoline",
+        "seating_capacity": "5",
+        "base_msrp": "$23,200",
+        "body_type": "Sport Utility Vehicle (SUV)",
+        "manufactured_in": "Mexico"
+      },
+      "specs": {
+        "engine": {
+          "name": "1.4L L4 DOHC 16V",
+          "horsepower": "-",
+          "cylinders": "4",
+          "displacement_cc": "1400.0",
+          "displacement_ci": "85.4332417326251975",
+          "displacement_l": "1.4",
+          "manufacturer": "GME"
+        },
+        "price": {
+          "base_msrp": "$23,200",
+          "dealer_invoice": "$22,318"
+        },
+        "dimensions": {
+          "wheelbase": "100.60 in.",
+          "length": "167.60 in.",
+          "width": "69.90 in.",
+          "height": "66.00",
+          "turning_diameter": "35.40 in.",
+          "front_headroom": "39.60",
+          "front_legroom": "40.80",
+          "front_shoulder_room": "54.10"
+        },
+        "braking": {
+          "front_brake_type": "Disc",
+          "rear_brake_type": "Disc",
+          "anti_brake_system": "4-Wheel ABS",
+          "abs_brakes": "Standard"
+        },
+        "suspension": {
+          "front_suspension": "Independent",
+          "rear_suspension": "Independent",
+          "front_spring_type": "Coil",
+          "rear_spring_type": "Coil",
+          "steering_type": "Rack & Pinion"
+        },
+        "seating": {
+          "seating_capacity": "5"
+        },
+        "safety": {
+          "vehicle_anti_theft": "Standard",
+          "front_side_airbag": "Standard",
+          "driver_airbag": "Standard",
+          "passenger_airbag": "Standard"
+        },
+        "warranty": {
+          "warranty_duration": "36 month",
+          "warranty_distance": "36,000 mile",
+          "powertrain_duration": "60 month",
+          "rust_duration": "72 month",
+          "rust_distance": "100,000 mile"
+        },
+        "fuel": {
+          "primary_type": "Gasoline",
+          "secondary_type": "Ethanol (E85)",
+          "injection_type": "Multipoint Fuel Injection (MPFI)"
+        },
+        "ncsa": {
+          "ncsa_model": "-",
+          "ncsa_make": "-",
+          "ncsa_body_type": "-"
+        },
+        "manufacturer": {
+          "name": "GENERAL MOTORS LLC",
+          "plant": "GMNA",
+          "city": "SAN LUIS POTOSI",
+          "state": "-",
+          "country": "MEXICO"
+        }
+      },
+      "recalls": [],
+      "auctions": [],
+      "accidents": [],
+      "titles": [
+        {
+          "owner": 2,
+          "label": "Vehicle was financed, and a lender (bank/dealership) has a lien on the title until the dept is paid",
+          "notes": ["Motor Vehicle Department, VIRGINIA"],
+          "date": "2025-07-10T00:00:00.000Z",
+          "odometer": 62532,
+          "states": ["VA"]
+        },
+        {
+          "owner": 1,
+          "label": "Title issued or updated",
+          "notes": [],
+          "date": "2025-06-06T00:00:00.000Z",
+          "odometer": 62457,
+          "states": ["VA"]
+        },
+        {
+          "owner": 1,
+          "label": "The creditors or lessors have invoked legal authority to seize the vehicle due to default on a loan or lease",
+          "notes": ["Motor Vehicle Department, VIRGINIA"],
+          "date": "2025-04-28T00:00:00.000Z",
+          "odometer": 62454,
+          "states": ["VA"]
+        },
+        {
+          "owner": 1,
+          "label": "Vehicle was financed, and a lender (bank/dealership) has a lien on the title until the dept is paid",
+          "notes": ["Motor Vehicle Department, VIRGINIA"],
+          "date": "2025-04-28T00:00:00.000Z",
+          "odometer": 62454,
+          "states": ["VA"]
+        },
+        {
+          "owner": 1,
+          "label": "Title issued or updated",
+          "notes": [],
+          "date": "2024-02-09T00:00:00.000Z",
+          "odometer": 58297,
+          "states": ["VA"]
+        },
+        {
+          "owner": 1,
+          "label": "Vehicle was financed, and a lender (bank/dealership) has a lien on the title until the dept is paid",
+          "notes": ["Motor Vehicle Department, Chesapeake, VA"],
+          "date": "2021-07-22T00:00:00.000Z",
+          "odometer": 5621,
+          "states": ["VA"]
+        }
+      ],
+      "owners": [
+        {
+          "index": 1,
+          "types": ["personal"],
+          "states": ["VA"],
+          "purchase_date": "2021-06-01T00:00:00.000Z",
+          "sold_date": "2025-07-01T00:00:00.000Z"
+        },
+        {
+          "index": 2,
+          "types": ["personal"],
+          "states": ["VA"],
+          "purchase_date": "2025-07-01T00:00:00.000Z"
+        }
+      ]
+    },
+    "balance": 4
+  },
+  {
+    "success": true,
+    "data": {
+      "VIN": "1G4CW54K334142842",
+      "vehicle": {
+        "make": "BUICK",
+        "model": "Park Avenue",
+        "year": 2003,
+        "trim": "Sedan",
+        "engine": "3.8L V6 OHV 12V",
+        "drivetrain": "Front Wheel Drive",
+        "cylinders": "6",
+        "displacement_cc": "3800.0",
+        "mpg_city": "20 miles/gallon",
+        "mpg_highway": "29 miles/gallon",
+        "seating_capacity": "6",
+        "base_msrp": "$34,600",
+        "body_type": "Sedan",
+        "manufactured_in": "United States"
+      },
+      "specs": {
+        "engine": {
+          "name": "3.8L V6 OHV 12V",
+          "horsepower": "-",
+          "cylinders": "6",
+          "displacement_cc": "3800.0",
+          "displacement_ci": "231.8902275599826790",
+          "displacement_l": "3.8",
+          "configuration": "V Shaped",
+          "manufacturer": "GMPTG Flint"
+        },
+        "price": {
+          "base_msrp": "$34,600",
+          "dealer_invoice": "$31,313"
+        },
+        "dimensions": {
+          "wheelbase": "113.80 in.",
+          "length": "206.80 in.",
+          "width": "74.70 in.",
+          "height": "57.40",
+          "turning_diameter": "40.00 in.",
+          "front_headroom": "39.80",
+          "front_legroom": "42.40",
+          "front_shoulder_room": "59.20",
+          "track_front": "62.70",
+          "track_rear": "62.30",
+          "passenger_volume": "112.10",
+          "curb_weight": "3788"
+        },
+        "braking": {
+          "front_brake_type": "Disc",
+          "rear_brake_type": "Disc",
+          "anti_brake_system": "4-Wheel ABS",
+          "abs_brakes": "Standard"
+        },
+        "suspension": {
+          "front_suspension": "Independent",
+          "rear_suspension": "Independent",
+          "front_spring_type": "Coil",
+          "rear_spring_type": "Coil",
+          "steering_type": "Rack & Pinion"
+        },
+        "seating": {
+          "seating_capacity": "6",
+          "leather_seat": "Standard",
+          "front_heated_seat": "Optional",
+          "front_power_memory_seat": "Optional",
+          "driver_multi_adjustable_power_seat": "Standard",
+          "passenger_multi_adjustable_power_seat": "Standard"
+        },
+        "safety": {
+          "keyless_entry": "Standard",
+          "trunk_anti_trap_device": "Optional",
+          "power_door_locks": "Standard",
+          "vehicle_anti_theft": "Standard",
+          "front_side_airbag": "Standard",
+          "driver_airbag": "Standard",
+          "passenger_airbag": "Standard"
+        },
+        "warranty": {
+          "warranty_duration": "36 month",
+          "warranty_distance": "36,000 mile",
+          "powertrain_duration": "36 month",
+          "rust_duration": "72 month",
+          "rust_distance": "100,000 mile"
+        },
+        "fuel": {
+          "injection_type": "Sequential Fuel Injection (SFI)",
+          "fuel_tank": "18.50 gallon",
+          "mpg_city": "20 miles/gallon",
+          "mpg_highway": "29 miles/gallon"
+        },
+        "ncsa": {
+          "ncsa_model": "-",
+          "ncsa_make": "-",
+          "ncsa_body_type": "-"
+        },
+        "manufacturer": {
+          "name": "GENERAL MOTORS LLC",
+          "plant": "NA-GM Corp",
+          "city": "ORION",
+          "state": "MICHIGAN",
+          "country": "UNITED STATES (USA)"
+        }
+      },
+      "recalls": [
+        {
+          "campaign": "02V328000",
+          "manufacturer": "GENERAL MOTORS CORP.",
+          "component": "LATCHES/LOCKS/LINKAGES:TRUNK LID:LOCK",
+          "summary": "ON CERTAIN PASSENGER VEHICLES, THE EMERGENCY TRUNK RELEASE HANDLE MAY BE INSTALLED OR FORCED OUT OF THE PROPER POSITION.",
+          "remedy": "DEALERS WILL SECURE THE EMERGENCY TRUNK RELEASE CABLE TO ENSURE THAT THE EMERGENCY TRUNK RELEASE HANDLE OPERATES PROPERLY.  OWNER NOTIFICATION BEGAN DECEMBER 19, 2002.  OWNERS WHO TAKE THEIR VEHICLES TO AN AUTHORIZED DEALER ON AN AGREED UPON SERVICE DATE AND DO NOT RECEIVE THE FREE REMEDY WITHIN A REASONABLE TIME SHOULD CONTACT BUICK AT 1-800-521-7300.",
+          "consequence": "IF THE CABLE IS OUT OF THE PROPER POSITION, IT COULD INCREASE THE FORCE REQUIRED TO ACTIVATE THE EMERGENCY TRUNK RELEASE HANDLE AND A PERSON TRAPPED IN THE TRUNK MAY NOT BE ABLE TO RELEASE THE TRUNK LATCH USING THE EMERGENCY TRUNK RELEASE HANDLE.",
+          "date": "2002-12-09T00:00:00.000Z"
+        }
+      ],
+      "auctions": [],
+      "accidents": [],
+      "titles": [
+        {
+          "owner": 2,
+          "label": "Title issued or updated",
+          "notes": [],
+          "date": "2022-09-20T00:00:00.000Z",
+          "odometer": 65000,
+          "states": ["IL"]
+        },
+        {
+          "owner": 1,
+          "label": "Title issued or updated",
+          "notes": [],
+          "date": "2019-04-30T00:00:00.000Z",
+          "odometer": 58000,
+          "states": ["IL"]
+        },
+        {
+          "owner": 1,
+          "label": "Title issued or updated",
+          "notes": [],
+          "date": "2017-05-19T00:00:00.000Z",
+          "odometer": 46000,
+          "states": ["IL"]
+        },
+        {
+          "owner": 1,
+          "label": "Title issued or updated",
+          "notes": [],
+          "date": "2008-12-19T00:00:00.000Z",
+          "odometer": 16751,
+          "states": ["IL"]
+        },
+        {
+          "owner": 1,
+          "label": "Title issued or updated",
+          "notes": [],
+          "date": "2003-12-04T00:00:00.000Z",
+          "odometer": 549,
+          "states": ["IL"]
+        }
+      ],
+      "owners": [
+        {
+          "index": 1,
+          "types": ["personal"],
+          "states": ["IL"],
+          "purchase_date": "2003-11-01T00:00:00.000Z",
+          "sold_date": "2021-01-01T00:00:00.000Z"
+        },
+        {
+          "index": 2,
+          "types": ["personal"],
+          "states": ["IL"],
+          "purchase_date": "2021-01-01T00:00:00.000Z",
+          "sold_date": "2022-12-01T00:00:00.000Z"
+        },
+        {
+          "index": 3,
+          "types": ["personal"],
+          "states": ["FL"],
+          "purchase_date": "2022-12-01T00:00:00.000Z"
+        }
+      ]
+    },
+    "balance": 3
+  }
+]

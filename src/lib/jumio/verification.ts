@@ -7,7 +7,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import type { JumioVerificationStatus } from "@/generated/prisma/enums";
 import { prisma } from "@/lib/prisma";
 
-import type { JumioAcquisition } from "./acquisition";
+import type { JumioAcquisition, JumioAcquisitionChannel } from "./acquisition";
 import type {
   JumioCallbackPayload,
   JumioCreateAccountRequest,
@@ -49,12 +49,19 @@ const PROGRESS: Record<JumioVerificationStatus, number> = {
   FAILED: 4,
 };
 
-/** Pick the browser's half of the account reply for the configured channel. */
+/**
+ * Pick the browser's half of the account reply for the chosen channel.
+ *
+ * One reply carries both handles, so the choice costs nothing extra Jumio-side
+ * — it only decides which half crosses back. The browser never receives the
+ * one it did not ask for.
+ */
 function acquisitionFrom(
   response: JumioCreateAccountResponse,
   config: JumioConfig,
+  channel: JumioAcquisitionChannel,
 ): JumioAcquisition {
-  if (config.acquisitionChannel === "sdk") {
+  if (channel === "sdk") {
     const token = response.sdk?.token ?? null;
 
     if (!token) {
@@ -65,8 +72,8 @@ function acquisitionFrom(
         null,
         false,
         "Jumio returned no sdk.token. Enable the SDK acquisition channel on workflow " +
-          `${config.workflowKey} in Jumio's Workflow Designer, or set ` +
-          'NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL="redirect".',
+          `${config.workflowKey} in Jumio's Workflow Designer. Until then only ` +
+          'the "Continue on the Jumio site" option on the consent screen can work.',
       );
     }
 
@@ -76,7 +83,17 @@ function acquisitionFrom(
   const redirectUrl = response.web?.href ?? null;
 
   if (!redirectUrl) {
-    throw new JumioApiError("Jumio returned no Web Client URL.", null, false);
+    // Reachable by a driver picking this option on a tenant that has only the
+    // SDK channel enabled, so it gets the same treatment as the branch above:
+    // a generic message for the browser, the actual fix in the log (§20).
+    throw new JumioApiError(
+      "Identity verification is not available right now.",
+      null,
+      false,
+      "Jumio returned no web.href. Enable the web acquisition channel on workflow " +
+        `${config.workflowKey} in Jumio's Workflow Designer. Until then only ` +
+        'the "Stay on FreightID" option on the consent screen can work.',
+    );
   }
 
   return { channel: "redirect", redirectUrl };
@@ -121,11 +138,17 @@ export async function latestVerification(driverId: string) {
  * The local row comes first so its id can serve as `customerInternalReference`
  * — an opaque UUID, which is exactly what Jumio asks for and what keeps driver
  * PII out of their reference fields (§8).
+ *
+ * `channel` is the driver's pick from the consent screen. Omit it and the
+ * configured default applies, which is what callers with no user in front of
+ * them want. The request body sent to Jumio is identical either way — the
+ * channel only decides which half of the reply the browser gets back.
  */
 export async function startDriverVerification(
   driverId: string,
   consent: ConsentInput,
   client?: JumioClient,
+  channel?: JumioAcquisitionChannel,
 ): Promise<StartVerificationResult> {
   let config: JumioConfig;
 
@@ -216,7 +239,7 @@ export async function startDriverVerification(
       );
     }
 
-    const acquisition = acquisitionFrom(response, config);
+    const acquisition = acquisitionFrom(response, config, channel ?? config.defaultAcquisitionChannel);
 
     await prisma.driverVerification.update({
       where: { id: verification.id },

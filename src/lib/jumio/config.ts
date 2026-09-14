@@ -17,6 +17,7 @@
  * @see https://documentation.jumio.ai/docs/developer-resources/API/authorization
  */
 
+import { parseAcquisitionChannel } from "./acquisition";
 import type { JumioAcquisitionChannel, JumioSdkDatacenter } from "./acquisition";
 
 export type JumioDatacenter = "amer-1" | "emea-1" | "apac-1";
@@ -85,8 +86,14 @@ export type JumioConfig = {
   userAgent: string;
   /** Optional Web Client token lifetime, e.g. `30m`. Jumio's default applies when unset. */
   tokenLifetime: string | null;
-  /** Whether the browser embeds the Web SDK or redirects to the Web Client. */
-  acquisitionChannel: JumioAcquisitionChannel;
+  /**
+   * Which channel to use when the caller names none.
+   *
+   * The consent screen lets the driver choose per attempt, so this is the
+   * pre-selected option and the answer for callers with no user in front of
+   * them — not a lock on the integration.
+   */
+  defaultAcquisitionChannel: JumioAcquisitionChannel;
   /** `datacenter` in the spelling the Web SDK's `dc` attribute expects. */
   sdkDatacenter: JumioSdkDatacenter;
 };
@@ -120,17 +127,21 @@ function resolveDatacenter(): JumioDatacenter {
   return value as JumioDatacenter;
 }
 
-/** Defaults to the SDK; `redirect` falls back to the hosted Web Client without a code change. */
-function resolveAcquisitionChannel(): JumioAcquisitionChannel {
-  const value = read("NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL") ?? "sdk";
+/** The channel used when the request names none. Defaults to the SDK. */
+function resolveDefaultAcquisitionChannel(): JumioAcquisitionChannel {
+  const raw = read("NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL");
 
-  if (value !== "sdk" && value !== "redirect") {
+  if (!raw) return "sdk";
+
+  const channel = parseAcquisitionChannel(raw);
+
+  if (!channel) {
     throw new JumioConfigError(
-      `NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL must be "sdk" or "redirect" — got "${value}".`,
+      `NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL must be "sdk" or "redirect" — got "${raw}".`,
     );
   }
 
-  return value;
+  return channel;
 }
 
 /**
@@ -169,7 +180,7 @@ export function getJumioConfig(): JumioConfig {
     appUrl,
     userAgent: read("JUMIO_USER_AGENT") ?? "FreightID FreightID-POC/1.0",
     tokenLifetime: read("JUMIO_TOKEN_LIFETIME"),
-    acquisitionChannel: resolveAcquisitionChannel(),
+    defaultAcquisitionChannel: resolveDefaultAcquisitionChannel(),
     sdkDatacenter: SDK_DATACENTERS[datacenter],
   };
 }

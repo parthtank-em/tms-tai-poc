@@ -351,6 +351,92 @@ describe("start verification", () => {
       process.env.NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL = "sdk";
     }
   });
+
+  it("lets the caller's channel override the configured default", async () => {
+    // The consent screen sends the driver's pick, which has to win over the
+    // deployment's preference in both directions — otherwise the radio buttons
+    // are decoration.
+    const bothHandles = stubClient({
+      async createAccount() {
+        return {
+          account: { id: "acc-choice" },
+          workflowExecution: { id: "wf-choice" },
+          web: { href: "https://web.amer-1.jumio.ai/web/client?authorizationToken=jwt" },
+          sdk: { token: "sdk-token" },
+        };
+      },
+    });
+
+    // Default is "sdk" here, and the driver asked for the Web Client.
+    const chose = await startDriverVerification(
+      await createDriver(),
+      CONSENT,
+      bothHandles,
+      "redirect",
+    );
+
+    expect(chose.ok).toBe(true);
+    if (!chose.ok) return;
+    expect(chose.acquisition).toEqual({
+      channel: "redirect",
+      redirectUrl: "https://web.amer-1.jumio.ai/web/client?authorizationToken=jwt",
+    });
+
+    // And the other way round: default "redirect", driver stays on FreightID.
+    process.env.NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL = "redirect";
+
+    try {
+      const stayed = await startDriverVerification(
+        await createDriver(),
+        CONSENT,
+        bothHandles,
+        "sdk",
+      );
+
+      expect(stayed.ok).toBe(true);
+      if (!stayed.ok) return;
+      expect(stayed.acquisition).toEqual({
+        channel: "sdk",
+        token: "sdk-token",
+        datacenter: "us",
+        locale: "en",
+      });
+    } finally {
+      process.env.NEXT_PUBLIC_JUMIO_ACQUISITION_CHANNEL = "sdk";
+    }
+  });
+
+  it("fails the start when the driver picks a channel the workflow lacks", async () => {
+    const driverId = await createDriver();
+
+    // Default is "sdk" and the SDK handle is present, so this fails only
+    // because the driver's pick is honoured — the reply carries no web.href.
+    const result = await startDriverVerification(
+      driverId,
+      CONSENT,
+      stubClient({
+        async createAccount() {
+          return {
+            account: { id: "acc-no-web" },
+            workflowExecution: { id: "wf-no-web" },
+            sdk: { token: "sdk-token" },
+          };
+        },
+      }),
+      "redirect",
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    // Same sanitisation as the missing-SDK case: the Workflow Designer fix is
+    // the operator's to read in the log, not the driver's to read on screen.
+    expect(result.reason).toBe("Identity verification is not available right now.");
+    expect(result.reason).not.toContain("web.href");
+
+    const stored = await latestVerification(driverId);
+    expect(stored?.status).toBe("FAILED");
+  });
 });
 
 describe("cancelling an attempt", () => {

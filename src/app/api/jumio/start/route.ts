@@ -1,4 +1,5 @@
 import { getSession } from "@/lib/auth/guard";
+import { parseAcquisitionChannel } from "@/lib/jumio/acquisition";
 import { callbackClientIp } from "@/lib/jumio/callback-auth";
 import { consentLocationHint, resolveConsentLocation, toAlpha3 } from "@/lib/jumio/consent";
 import { startDriverVerification } from "@/lib/jumio/verification";
@@ -7,7 +8,10 @@ import { startDriverVerification } from "@/lib/jumio/verification";
  * `POST /api/jumio/start` — begin identity verification for a driver (§8).
  *
  * Returns an `acquisition` object — the SDK token on the SDK channel, the Web
- * Client URL on the redirect channel, decided by the server. Nothing else
+ * Client URL on the redirect channel. The driver picks which on the consent
+ * screen and it arrives as `channel`; anything else, including a missing or
+ * unrecognised value, falls back to the configured default rather than
+ * failing. Both handles come from the same account call either way. Nothing else
  * Jumio-side crosses back: no account id, no workflow id, no tenant
  * credential. The SDK token is the exception because the Web SDK is what
  * redeems it; it covers one workflow execution and expires with it.
@@ -22,7 +26,13 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { driverId?: unknown; consent?: unknown; country?: unknown; state?: unknown };
+  let body: {
+    driverId?: unknown;
+    consent?: unknown;
+    country?: unknown;
+    state?: unknown;
+    channel?: unknown;
+  };
 
   try {
     body = (await request.json()) as typeof body;
@@ -63,12 +73,21 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const result = await startDriverVerification(driverId, {
-    obtainedAt: new Date(),
-    ip: callbackClientIp(request.headers),
-    country: location.country,
-    state: location.state,
-  });
+  // Not validated into a 400: an unrecognised channel is a caller's typo, not
+  // a reason to block a driver who has already consented. The default stands in.
+  const channel = parseAcquisitionChannel(body.channel) ?? undefined;
+
+  const result = await startDriverVerification(
+    driverId,
+    {
+      obtainedAt: new Date(),
+      ip: callbackClientIp(request.headers),
+      country: location.country,
+      state: location.state,
+    },
+    undefined,
+    channel,
+  );
 
   if (!result.ok) {
     // The reason is already sanitized by the service — no Jumio payloads, no

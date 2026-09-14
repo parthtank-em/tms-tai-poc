@@ -24,7 +24,7 @@ const CONFIG: JumioConfig = {
   appUrl: "https://example.test",
   userAgent: "FreightID Test/1.0",
   tokenLifetime: null,
-  acquisitionChannel: "sdk",
+  defaultAcquisitionChannel: "sdk",
   sdkDatacenter: "us",
 };
 

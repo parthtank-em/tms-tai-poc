@@ -5,9 +5,25 @@ import { useCallback, useState } from "react";
 
 import { JumioWebSdk } from "@/components/jumio/web-sdk";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+  FieldTitle,
+} from "@/components/ui/field";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
-import type { JumioAcquisition } from "@/lib/jumio/acquisition";
+import {
+  defaultAcquisitionChannel,
+  type JumioAcquisition,
+  type JumioAcquisitionChannel,
+} from "@/lib/jumio/acquisition";
 
 /**
  * Consent, then hand off to Jumio (§9, §10).
@@ -16,10 +32,16 @@ import type { JumioAcquisition } from "@/lib/jumio/acquisition";
  * without `consent: true` as well — the server does not trust this component
  * to be the only way in.
  *
- * What happens next is the server's decision, carried in `acquisition`: the
- * SDK opens the capture screens over this page, or the browser navigates to
- * Jumio's hosted Web Client. Neither ending is a result — the driver lands on
- * the verification page, which reads the database.
+ * What happens next is the driver's choice, sent as `channel` and echoed back
+ * in `acquisition`: the SDK opens the capture screens over this page, or the
+ * browser navigates to Jumio's hosted Web Client. One account call produces
+ * both handles, so the pick costs nothing extra and changes nothing about what
+ * Jumio is told. Neither ending is a result — the driver lands on the
+ * verification page, which reads the database.
+ *
+ * The choice is made before the transaction exists. Changing it afterwards
+ * means cancelling and starting again, because one open verification per
+ * driver is the rule the server enforces.
  */
 
 type StartResponse = {
@@ -30,6 +52,24 @@ type StartResponse = {
 
 type SdkAcquisition = Extract<JumioAcquisition, { channel: "sdk" }>;
 
+/** The two ways to reach Jumio, described the way a driver would judge them. */
+const CHANNELS: ReadonlyArray<{
+  value: JumioAcquisitionChannel;
+  label: string;
+  hint: string;
+}> = [
+  {
+    value: "sdk",
+    label: "Stay on FreightID",
+    hint: "The camera opens here. You never leave this page.",
+  },
+  {
+    value: "redirect",
+    label: "Continue on the Jumio site",
+    hint: "Opens Jumio's own page, then brings you back when you are done.",
+  },
+];
+
 export function ConsentForm({ driverId, driverName }: { driverId: string; driverName: string }) {
   const router = useRouter();
   const [consented, setConsented] = useState(false);
@@ -37,6 +77,9 @@ export function ConsentForm({ driverId, driverName }: { driverId: string; driver
   const [error, setError] = useState<string | null>(null);
   const [verificationId, setVerificationId] = useState<string | null>(null);
   const [sdk, setSdk] = useState<SdkAcquisition | null>(null);
+  // Seeded from the environment's default so the deployment's preferred route
+  // is the one already selected; the driver is free to override it.
+  const [channel, setChannel] = useState<JumioAcquisitionChannel>(defaultAcquisitionChannel);
 
   async function start() {
     setSubmitting(true);
@@ -46,7 +89,7 @@ export function ConsentForm({ driverId, driverName }: { driverId: string; driver
       const response = await fetch("/api/jumio/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ driverId, consent: true }),
+        body: JSON.stringify({ driverId, consent: true, channel }),
       });
 
       const payload = (await response.json()) as StartResponse;
@@ -127,45 +170,65 @@ export function ConsentForm({ driverId, driverName }: { driverId: string; driver
   }
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-3 text-sm">
-        <p>
+    <FieldGroup>
+      <Field>
+        <FieldDescription>
           FreightID needs to verify {driverName}&apos;s identity before they can be approved.
-        </p>
-        <p>
+        </FieldDescription>
+        <FieldDescription>
           The verification process may collect information from a government-issued ID and
           biometric information such as a selfie.
-        </p>
-        <p className="text-muted-foreground">
+        </FieldDescription>
+        <FieldDescription>
           {/* Placeholder, deliberately not a link: the privacy notice and the exact
               consent wording are the business and legal owners' to supply. */}
           Privacy notice to be supplied by FreightID legal before any real driver uses this flow.
-        </p>
-      </div>
+        </FieldDescription>
+      </Field>
 
-      <div className="flex items-start gap-3">
-        <input
-          id="consent"
-          type="checkbox"
-          checked={consented}
-          onChange={(event) => setConsented(event.target.checked)}
+      <FieldSet>
+        <FieldLegend variant="label">How would you like to verify?</FieldLegend>
+
+        {/* `disabled` belongs on the group, not the fieldset: these are Base UI
+            spans over a hidden input, so only the group knows how to stop them
+            responding to a click. */}
+        <RadioGroup
+          value={channel}
+          onValueChange={(value: JumioAcquisitionChannel) => setChannel(value)}
           disabled={submitting}
-          className="mt-0.5 size-4 rounded border-border accent-primary"
+        >
+          {CHANNELS.map((option) => (
+            // The label wraps the radio rather than pointing at it with
+            // `htmlFor`: Base UI renders a span whose only real input is
+            // aria-hidden, and wrapping is what it reads to name the control.
+            // It also makes the whole card the hit target.
+            <FieldLabel key={option.value}>
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldTitle>{option.label}</FieldTitle>
+                  <FieldDescription>{option.hint}</FieldDescription>
+                </FieldContent>
+                <RadioGroupItem value={option.value} />
+              </Field>
+            </FieldLabel>
+          ))}
+        </RadioGroup>
+      </FieldSet>
+
+      <FieldLabel className="font-normal">
+        <Checkbox
+          checked={consented}
+          onCheckedChange={setConsented}
+          disabled={submitting}
         />
-        <Label htmlFor="consent" className="text-sm font-normal">
-          I consent to identity verification
-        </Label>
-      </div>
+        I consent to identity verification
+      </FieldLabel>
 
-      {error && (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      )}
+      <FieldError>{error}</FieldError>
 
-      <Button onClick={start} disabled={!consented || submitting}>
+      <Button onClick={start} disabled={!consented || submitting} className="w-fit">
         {submitting ? "Starting…" : "Continue"}
       </Button>
-    </div>
+    </FieldGroup>
   );
 }

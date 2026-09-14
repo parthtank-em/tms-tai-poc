@@ -5,8 +5,8 @@ import { requireSession } from "@/lib/auth/guard";
  * Same gate as /shipments: the proxy redirect is optimistic, so the session is
  * verified here, inside the render, next to the Prisma queries it protects.
  *
- * Nothing links to this segment — it is reachable by URL only — which is
- * exactly why the check cannot live in the navigation.
+ * The POC index at `/` links here, but that link is not the gate — deep links
+ * skip it entirely, so the check has to live in the segment.
  */
 export default async function JumioDashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession();

@@ -11,7 +11,7 @@ export type LoginState = { error: string | null };
 /** Only same-origin paths, so `?from=` cannot be turned into an open redirect. */
 function safeReturnTo(value: FormDataEntryValue | null): string {
   const path = typeof value === "string" ? value : "";
-  return path.startsWith("/") && !path.startsWith("//") ? path : "/shipments";
+  return path.startsWith("/") && !path.startsWith("//") ? path : "/";
 }
 
 export async function loginAction(_previous: LoginState, formData: FormData): Promise<LoginState> {

@@ -15,11 +15,11 @@ export default async function LoginPage({
 }) {
   // Already signed in — no reason to show the form again.
   if (await getSession()) {
-    redirect("/shipments");
+    redirect("/");
   }
 
   const { from } = await searchParams;
-  const returnTo = from?.startsWith("/") && !from.startsWith("//") ? from : "/shipments";
+  const returnTo = from?.startsWith("/") && !from.startsWith("//") ? from : "/";
 
   return (
     // No card. One credential, two fields — a bordered box around it only adds

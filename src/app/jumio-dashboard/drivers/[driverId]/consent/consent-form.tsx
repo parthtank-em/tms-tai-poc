@@ -60,12 +60,12 @@ const CHANNELS: ReadonlyArray<{
 }> = [
   {
     value: "sdk",
-    label: "Stay on FreightID",
+    label: "Stay on FreightID (Using Jumio SDK)",
     hint: "The camera opens here. You never leave this page.",
   },
   {
     value: "redirect",
-    label: "Continue on the Jumio site",
+    label: "Redirect on the Jumio site (Using Jumio Web Client)",
     hint: "Opens Jumio's own page, then brings you back when you are done.",
   },
 ];

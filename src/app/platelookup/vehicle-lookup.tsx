@@ -18,6 +18,17 @@ import type { PlateLookupVehicle } from "@/lib/platelookup/client";
 
 const INITIAL: VehicleLookupState = { status: "idle" };
 
+/** Pre-filled so the page is one click from a working lookup. */
+const DEFAULTS = { vin: "3GNCJLSBXLL230525", state: "VA", plate: "9247DG" };
+
+/**
+ * Keeps the "or" separator and the buttons on the inputs' line: with the
+ * example hints below each field, bottom-aligning the row would otherwise drop
+ * them to the hints' baseline. Matches the hint's line height (`text-xs`, 1rem)
+ * plus the `space-y-1.5` gap above it.
+ */
+const ALIGN_TO_INPUT = "mb-[1.375rem]";
+
 /** The API fills in what it has, so a gap here is normal. */
 const EMPTY = "—";
 
@@ -84,12 +95,19 @@ export function VehicleLookup() {
 
   // React resets the form once the action settles. Holding the inputs keeps a
   // failed lookup from making the operator retype them.
-  const [vin, setVin] = useState("");
-  const [plateState, setPlateState] = useState("");
-  const [plate, setPlate] = useState("");
+  const [vin, setVin] = useState(DEFAULTS.vin);
+  const [plateState, setPlateState] = useState(DEFAULTS.state);
+  const [plate, setPlate] = useState(DEFAULTS.plate);
 
   const failure = state.status === "done" && !state.result.ok ? state.result : null;
   const invalid = failure?.failure === "invalid-query" || failure?.failure === "bad-request";
+  const empty = vin === "" && plateState === "" && plate === "";
+
+  function clear() {
+    setVin("");
+    setPlateState("");
+    setPlate("");
+  }
 
   return (
     <div className="space-y-8">
@@ -103,14 +121,17 @@ export function VehicleLookup() {
               value={vin}
               onChange={(event) => setVin(event.target.value)}
               autoComplete="off"
-              placeholder="3GNCJLSBXLL230525"
+              placeholder="Enter VIN"
               maxLength={17}
               autoFocus
               disabled={pending}
               aria-invalid={invalid || undefined}
-              aria-describedby={failure ? "lookup-error" : "lookup-hint"}
+              aria-describedby={failure ? "vin-hint lookup-error" : "vin-hint lookup-hint"}
               className="h-9 w-64 uppercase"
             />
+            <p id="vin-hint" className="text-xs text-muted-foreground">
+              (Ex. 3GNCJLSBXLL230525)
+            </p>
           </div>
 
           {/*
@@ -118,7 +139,11 @@ export function VehicleLookup() {
             three-part form. `h-9` matches the inputs so "or" sits on their line
             rather than on the labels above them.
           */}
-          <span className="flex h-9 items-center px-1 text-sm text-muted-foreground">or</span>
+          <span
+            className={`flex h-9 items-center px-1 text-sm text-muted-foreground ${ALIGN_TO_INPUT}`}
+          >
+            or
+          </span>
 
           <div className="space-y-1.5">
             <Label htmlFor="state">State</Label>
@@ -128,13 +153,16 @@ export function VehicleLookup() {
               value={plateState}
               onChange={(event) => setPlateState(event.target.value)}
               autoComplete="off"
-              placeholder="VA"
+              placeholder="Enter State"
               maxLength={2}
               disabled={pending}
               aria-invalid={invalid || undefined}
-              aria-describedby={failure ? "lookup-error" : "lookup-hint"}
-              className="h-9 w-20 uppercase"
+              aria-describedby={failure ? "state-hint lookup-error" : "state-hint lookup-hint"}
+              className="h-9 w-24 uppercase"
             />
+            <p id="state-hint" className="text-xs text-muted-foreground">
+              (Ex. VA)
+            </p>
           </div>
 
           <div className="space-y-1.5">
@@ -145,17 +173,32 @@ export function VehicleLookup() {
               value={plate}
               onChange={(event) => setPlate(event.target.value)}
               autoComplete="off"
-              placeholder="9247DG"
+              placeholder="Enter License Plate"
               disabled={pending}
               aria-invalid={invalid || undefined}
-              aria-describedby={failure ? "lookup-error" : "lookup-hint"}
-              className="h-9 w-40 uppercase"
+              aria-describedby={failure ? "plate-hint lookup-error" : "plate-hint lookup-hint"}
+              className="h-9 w-44 uppercase"
             />
+            <p id="plate-hint" className="text-xs text-muted-foreground">
+              (Ex. 9247DG)
+            </p>
           </div>
 
-          <Button type="submit" size="lg" disabled={pending}>
-            {pending ? "Fetching…" : "Fetch"}
-          </Button>
+          <div className={`flex gap-3 ${ALIGN_TO_INPUT}`}>
+            <Button type="submit" size="lg" disabled={pending}>
+              {pending ? "Fetching…" : "Fetch"}
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={clear}
+              disabled={pending || empty}
+            >
+              Clear
+            </Button>
+          </div>
         </div>
 
         {/*

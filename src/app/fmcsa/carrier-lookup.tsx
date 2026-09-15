@@ -18,6 +18,9 @@ import type { FmcsaCarrier } from "@/lib/fmcsa/client";
 
 const INITIAL: CarrierLookupState = { status: "idle" };
 
+/** Pre-filled so the page is one click from a working lookup. */
+const DEFAULT_DOT_NUMBER = "44110";
+
 /** FMCSA omits any element with no value, so a gap here is normal. */
 const EMPTY = "—";
 
@@ -92,15 +95,17 @@ export function CarrierLookup() {
 
   // React resets the form once the action settles. Holding the number keeps a
   // failed lookup from making the operator retype it.
-  const [dotNumber, setDotNumber] = useState("");
+  const [dotNumber, setDotNumber] = useState(DEFAULT_DOT_NUMBER);
 
   const failure = state.status === "done" && !state.result.ok ? state.result : null;
 
   return (
     <div className="space-y-8">
-      <form action={formAction} className="flex flex-wrap items-end gap-3">
-        <div className="space-y-1.5">
-          <Label htmlFor="dotNumber">US DOT Number</Label>
+      <form action={formAction} className="space-y-1.5">
+        <Label htmlFor="dotNumber">US DOT Number</Label>
+
+        {/* The buttons share this row so the hint below only follows the input. */}
+        <div className="flex flex-wrap items-center gap-3">
           <Input
             id="dotNumber"
             name="dotNumber"
@@ -111,19 +116,33 @@ export function CarrierLookup() {
             // character instead of letting the server explain the problem.
             inputMode="numeric"
             autoComplete="off"
-            placeholder="44110"
+            placeholder="Enter US DOT Number"
             required
             autoFocus
             disabled={pending}
             aria-invalid={failure?.failure === "invalid-dot" || undefined}
-            aria-describedby={failure ? "lookup-error" : undefined}
+            aria-describedby={failure ? "dot-hint lookup-error" : "dot-hint"}
             className="h-9 w-56"
           />
+
+          <Button type="submit" size="lg" disabled={pending}>
+            {pending ? "Fetching…" : "Fetch"}
+          </Button>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            onClick={() => setDotNumber("")}
+            disabled={pending || dotNumber === ""}
+          >
+            Clear
+          </Button>
         </div>
 
-        <Button type="submit" size="lg" disabled={pending}>
-          {pending ? "Fetching…" : "Fetch"}
-        </Button>
+        <p id="dot-hint" className="text-xs text-muted-foreground">
+          (Ex. 44110)
+        </p>
       </form>
 
       {failure && (

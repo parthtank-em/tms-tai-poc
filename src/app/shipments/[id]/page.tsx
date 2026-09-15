@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { AlertsDialog } from "./alerts-dialog";
 import { LifecycleFeedback, StatusControls, StopControls } from "./lifecycle-controls";
+import { ReferenceNumbersDialog } from "./reference-numbers-dialog";
 
 import { ShipmentStatusBadge, SyncStatusBadge } from "@/components/status-badge";
 import {
@@ -95,6 +96,7 @@ export default async function ShipmentDetailPage({
             <div className="ml-auto flex flex-wrap items-center gap-2">
               <StatusControls shipmentId={shipment.id} status={shipment.status} />
               <AlertsDialog shipmentId={shipment.id} initialOpenCount={openAlerts} />
+              <ReferenceNumbersDialog shipmentId={shipment.id} />
             </div>
           </div>
 

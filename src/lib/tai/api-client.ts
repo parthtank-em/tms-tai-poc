@@ -35,6 +35,7 @@ const PATHS = {
   alertsResolved: `${SHIPPING_PREFIX}/Alerts/Resolved`,
   brokerAlertTypes: `${BROKER_PREFIX}/Alerts`,
   tracking: `${SHIPPING_PREFIX}/Tracking`,
+  shipmentReferenceNumbers: `${SHIPPING_PREFIX}/ShipmentReferenceNumbers`,
   // Use case 3's activity log is still inferred from the findings doc — no
   // OpenAPI definition for it yet.
   activityLogs: `${SHIPPING_PREFIX}/ShipmentActivityLogs`,
@@ -108,7 +109,7 @@ function isRetryable(status: number | null): boolean {
 }
 
 async function call(
-  method: "GET" | "POST" | "PUT",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body: unknown,
   context: CallContext,
@@ -467,6 +468,149 @@ export async function updateStopTracking(
   if (invalid) return { ok: false, status: null, error: invalid, retryable: false };
 
   return call("PUT", `${PATHS.tracking}/${shipmentStopId}`, body, context);
+}
+
+// --- Shipment reference numbers --------------------------------------------
+
+/**
+ * `TMSFoundation.Models.PublicAPI.v2.PublicAPIShipmentReferenceNumberV2`
+ * — the read shape. Both fields are optional on the response.
+ */
+export type PublicApiShipmentReferenceNumberV2 = {
+  referenceType?: string;
+  value?: string;
+};
+
+/**
+ * `TMSFoundation.Models.PublicAPI.v2.PublicAPIShipmentReferenceNumberV3`
+ * — the write shape. Same two fields, but **both are required**; that stricter
+ * contract is the only thing separating V3 from V2.
+ */
+export type PublicApiShipmentReferenceNumberV3 = {
+  referenceType: string;
+  value: string;
+};
+
+/** `TMSFoundation.Models.PublicAPI.v2.PublicAPIShipmentReferenceType` */
+export type PublicApiShipmentReferenceType = {
+  referenceType?: string;
+};
+
+/**
+ * All three reference-number operations address the shipment through the same
+ * required `shipmentId` query parameter, so the URL is built once.
+ */
+function referenceNumbersPath(shipmentId: number): string {
+  return `${PATHS.shipmentReferenceNumbers}?shipmentId=${shipmentId}`;
+}
+
+function invalidShipmentId(shipmentId: number): TaiCallResult | null {
+  return isValidTaiShipmentId(shipmentId)
+    ? null
+    : {
+        ok: false,
+        status: null,
+        error: `shipmentId must be an int32 between 1 and ${INT32_MAX}; got ${String(shipmentId)}.`,
+        retryable: false,
+      };
+}
+
+/**
+ * **Get Shipment Reference Numbers** — `GET /PublicApi/Shipping/v2/ShipmentReferenceNumbers`
+ * "Returns a list of shipment reference numbers for the specified shipment."
+ * operationId `PublicAPIShipping_GetShipmentReferenceNumbers`
+ *
+ * Responds 200 with an array of `PublicAPIShipmentReferenceNumberV2`.
+ */
+export async function getShipmentReferenceNumbers(
+  shipmentId: number,
+  context: CallContext,
+): Promise<TaiCallResult> {
+  return invalidShipmentId(shipmentId) ?? call("GET", referenceNumbersPath(shipmentId), undefined, context);
+}
+
+/**
+ * **Update Shipment Reference Numbers** — `PUT /PublicApi/Shipping/v2/ShipmentReferenceNumbers`
+ * "Add or update shipment reference numbers for the shipment."
+ * operationId `PublicAPIShipping_UpdateShipmentReferenceNumbers`
+ *
+ * Responds 200 with an array of `PublicAPIShipmentReferenceNumberV3` — the
+ * whole list as TAI now holds it, not just what was sent.
+ *
+ * ⚠️ Two behaviours here are **not** what the spec suggests:
+ *
+ * 1. A single entry written onto a list with no such type came back as two
+ *    identical rows (observed on shipment 131391979), and stayed doubled on
+ *    every later GET. Callers must collapse exact duplicates on read.
+ * 2. Whether sending an existing `referenceType` replaces its value or appends
+ *    a second entry is **unverified** — the spec says only "add or update", and
+ *    no call has ever tested it. Nothing depends on the answer: this is used
+ *    only to add, and changing a value goes through DELETE first.
+ */
+export async function updateShipmentReferenceNumbers(
+  shipmentId: number,
+  body: PublicApiShipmentReferenceNumberV3[],
+  context: CallContext,
+): Promise<TaiCallResult> {
+  const invalid = invalidShipmentId(shipmentId);
+  if (invalid) return invalid;
+
+  if (!Array.isArray(body) || body.length === 0) {
+    return {
+      ok: false,
+      status: null,
+      error: "At least one reference number is required.",
+      retryable: false,
+    };
+  }
+
+  // V3 marks both fields required; an empty string would satisfy the type but
+  // not the contract.
+  const blank = body.find((entry) => !entry.referenceType?.trim() || !entry.value?.trim());
+  if (blank) {
+    return {
+      ok: false,
+      status: null,
+      error: "Every reference number needs both a referenceType and a value.",
+      retryable: false,
+    };
+  }
+
+  return call("PUT", referenceNumbersPath(shipmentId), body, context);
+}
+
+/**
+ * **Delete Shipment Reference Numbers** — `DELETE /PublicApi/Shipping/v2/ShipmentReferenceNumbers`
+ * "Deletes shipment reference numbers for the specified shipment."
+ * operationId `PublicAPIShipping_DeleteShipmentReferenceNumbers`
+ *
+ * The body carries *types only* — `PublicAPIShipmentReferenceType` has no
+ * `value` field, so a delete removes whatever is stored under that type.
+ */
+export async function deleteShipmentReferenceNumbers(
+  shipmentId: number,
+  body: PublicApiShipmentReferenceType[],
+  context: CallContext,
+): Promise<TaiCallResult> {
+  const invalid = invalidShipmentId(shipmentId);
+  if (invalid) return invalid;
+
+  if (!Array.isArray(body) || body.length === 0) {
+    return {
+      ok: false,
+      status: null,
+      error: "At least one reference type is required.",
+      retryable: false,
+    };
+  }
+
+  return call("DELETE", referenceNumbersPath(shipmentId), body, context);
+}
+
+/** The spec declares an array response; tolerate a single object defensively. */
+export function asReferenceNumbers(data: unknown): PublicApiShipmentReferenceNumberV2[] {
+  if (Array.isArray(data)) return data as PublicApiShipmentReferenceNumberV2[];
+  return data && typeof data === "object" ? [data as PublicApiShipmentReferenceNumberV2] : [];
 }
 
 /**

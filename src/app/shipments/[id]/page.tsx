@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { AlertsDialog } from "./alerts-dialog";
+import { AssignmentDialog } from "./assignment-dialog";
 import { LifecycleFeedback, StatusControls, StopControls } from "./lifecycle-controls";
 import { ReferenceNumbersDialog } from "./reference-numbers-dialog";
 
@@ -97,6 +98,7 @@ export default async function ShipmentDetailPage({
               <StatusControls shipmentId={shipment.id} status={shipment.status} />
               <AlertsDialog shipmentId={shipment.id} initialOpenCount={openAlerts} />
               <ReferenceNumbersDialog shipmentId={shipment.id} />
+              <AssignmentDialog shipmentId={shipment.id} />
             </div>
           </div>
 

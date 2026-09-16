@@ -77,10 +77,20 @@ function Field({ label, value }: { label: string; value: string | null }) {
   );
 }
 
-export function DocumentCheckForm({ documentTypes }: { documentTypes: readonly DocumentType[] }) {
+export function DocumentCheckForm({
+  documentTypes,
+  defaultDocumentType,
+}: {
+  documentTypes: readonly DocumentType[];
+  defaultDocumentType: string;
+}) {
   const formRef = useRef<HTMLFormElement>(null);
 
-  const [documentType, setDocumentType] = useState<string | null>(documentTypes[0]?.code ?? null);
+  const [documentType, setDocumentType] = useState<string | null>(
+    documentTypes.find((type) => type.code === defaultDocumentType)?.code ??
+      documentTypes[0]?.code ??
+      null,
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkId, setCheckId] = useState<string | null>(null);
@@ -174,6 +184,22 @@ export function DocumentCheckForm({ documentTypes }: { documentTypes: readonly D
             <div className="space-y-1.5">
               <Label htmlFor="file">Document</Label>
               <Input id="file" name="file" type="file" accept={ACCEPT} required />
+            </div>
+
+            <div className="space-y-1.5">
+              {/* Per upload, not per deployment: a tenant can have several Doc
+                  Proof definitions enabled, and comparing them is what this
+                  screen is for. */}
+              <Label htmlFor="workflowKey">Workflow key</Label>
+              <Input
+                id="workflowKey"
+                name="workflowKey"
+                required
+                maxLength={64}
+                inputMode="numeric"
+                autoComplete="off"
+                placeholder="10170"
+              />
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">

@@ -62,7 +62,7 @@ This is the difference that explains every other difference.
 | Credential declared up front | No — the user picks in the UI | **Yes** — country + type, exactly one each |
 | Consent record | Required, gated on a consent screen | Not collected |
 | Who finalizes | The Web Client, when the user submits | **We do**, explicitly |
-| Workflow key | `JUMIO_WORKFLOW_KEY` | `JUMIO_DOCUMENT_WORKFLOW_KEY` |
+| Workflow key | `JUMIO_WORKFLOW_KEY` | A field on the upload form, per request |
 | Redirect involved | Yes | No |
 
 The Web Client performs steps 2–4 of §5 on its own. On the API channel nothing does, so
@@ -136,7 +136,7 @@ Content-Type: application/json
 {
   "customerInternalReference": "<document_checks.id>",
   "workflowDefinition": {
-    "key": "<JUMIO_DOCUMENT_WORKFLOW_KEY>",
+    "key": "<workflowKey from the form>",
     "credentials": [
       {
         "category": "DOCUMENT",
@@ -287,7 +287,9 @@ Jumio, not on the page.
 
 | Situation | What happens |
 | --- | --- |
-| Not configured (`JUMIO_DOCUMENT_WORKFLOW_KEY` unset) | The page says so up front instead of failing at upload |
+| Jumio not configured (missing `JUMIO_CLIENT_ID` etc.) | The page says so up front instead of failing at upload |
+| Workflow key malformed | Rejected in the route, 400, nothing sent to Jumio |
+| Workflow key not enabled for the tenant | Jumio rejects the create call; the row is `FAILED` with Jumio's reason logged |
 | File too large / wrong type | Rejected in the route, 400, nothing sent to Jumio |
 | Account creation rejected | Row marked `FAILED` with a sanitized reason; Jumio's own explanation to the log only |
 | Upload or finalize rejected | Same — the row records the failure rather than pretending it did not happen |
@@ -350,8 +352,9 @@ So the ask to Jumio has three parts, and the third is the one that gets missed:
 2. Configured for the **document types** we intend to support (see §9 — start with `UB`)
 3. Configured for the **fields we expect back** (address, issuingDate, lastName …)
 
-Then put that key in `JUMIO_DOCUMENT_WORKFLOW_KEY`. **No code change is needed** — the
-mapper, columns, presenter and UI already handle extraction and are covered by tests.
+Then type that key into the **Workflow key** field on the upload form. **No code change
+and no redeploy is needed** — the mapper, columns, presenter and UI already handle
+extraction and are covered by tests.
 
 ### What extraction returns, once enabled
 
@@ -437,34 +440,38 @@ Portal: *Settings → Identity Verification → Supported IDs* and *Accepted IDs
 
 # 9. Supported document types
 
-Jumio's full DOCUMENT catalogue. ✅ marks the subset currently in the dropdown
-(`DOCUMENT_TYPES` in `document-check.ts`).
+Jumio's full DOCUMENT catalogue. All of it is in the dropdown (`DOCUMENT_TYPES` in
+`document-check.ts`), in this order. Which codes a given upload can actually use still
+depends on the workflow key entered on the form.
 
-| Code | Document | In dropdown |
-| --- | --- | --- |
-| `UB` | Utility bill | ✅ |
-| `BS` | Bank statement | ✅ |
-| `CCS` | Credit card statement | ✅ |
-| `PB` | Phone bill | ✅ |
-| `CB` | Council bill | ✅ |
-| `LAG` | Lease agreement | ✅ |
-| `TR` | Tax return | ✅ |
-| `VT` | Vehicle title | ✅ |
-| `IC` | Insurance card | ✅ |
-| `SSC` | Social security card | ✅ |
-| `BC` | Birth certificate | |
-| `HCC` | Health care card | |
-| `MEDC` | Medicare card | |
-| `SEL` | School enrolment letter | |
-| `SENC` | Seniors card | |
-| `STUC` | Student card | |
-| `WWCC` | Working with children check | |
-| `CRC` | Corporate resolution certificate | |
-| `LOAP` | Loan application | |
-| `MOAP` | Mortgage application | |
-| `SS` | Superannuation statement | |
-| `TAC` | Trade association card | |
-| `VC` | Voided check | |
+| Code | Document |
+| --- | --- |
+| `BC` | Birth certificate |
+| `HCC` | Health care card |
+| `IC` | Insurance card |
+| `MEDC` | Medicare card |
+| `SEL` | School enrolment letter |
+| `SENC` | Seniors card |
+| `SSC` | Social security card |
+| `STUC` | Student card |
+| `WWCC` | Working with children check |
+| `BS` | Bank statement |
+| `CCS` | Credit card statement |
+| `CRC` | Corporate resolution certificate |
+| `LAG` | Lease agreement |
+| `LOAP` | Loan application |
+| `MOAP` | Mortgage application |
+| `SS` | Superannuation statement |
+| `TAC` | Trade association card |
+| `TR` | Tax return |
+| `VC` | Voided check |
+| `CB` | Council bill |
+| `PB` | Phone bill |
+| `UB` | Utility bill |
+| `VT` | Vehicle title |
+
+The form opens on `UB` (`DEFAULT_DOCUMENT_TYPE`) rather than on whichever code sorts
+first — an address proof is what a freight operator uploads most.
 
 Jumio notes: *"Other document types may be available, and custom documents may be
 added"* — custom codes must be unique and cannot be `CUSTOM` or `OTHER`.
@@ -481,15 +488,24 @@ card statements, capped at 2.
 
 # 10. Configuration
 
-| Variable | Comes from | Used for |
+**This flow adds no environment variable.** The document workflow key is a field on the
+upload form, submitted with the file and recorded on the row as
+`document_checks.jumio_workflow_key`.
+
+| Input | Comes from | Used for |
 | --- | --- | --- |
-| `JUMIO_DOCUMENT_WORKFLOW_KEY` | Jumio Account Manager, or Workflow Designer | Which checks run on an uploaded document. **Must permit the API acquisition channel.** Unset → the page reports it |
+| Workflow key (form field) | Jumio Account Manager, or Workflow Designer | Which checks run on this upload. **Must permit the API acquisition channel.** Required, entered per upload — Jumio's Doc Proof quickstart key is `10170` |
+
+Deliberately not a variable: a tenant can have several Doc Proof definitions enabled,
+and comparing them is the point of this screen — a redeploy per experiment would defeat
+it. The route validates the shape only (`^[A-Za-z0-9_-]{1,64}$`); whether the key names a
+workflow the tenant has is Jumio's answer, and it arrives as a 400 on the create call.
 
 Everything else — `JUMIO_CLIENT_ID`, `JUMIO_CLIENT_SECRET`, `JUMIO_DATACENTER`,
 `JUMIO_CALLBACK_SECRET`, `JUMIO_CALLBACK_URL` — is shared with the identity flow and
 documented in `Jumio_Integration_Runbook.md` §6 and `.env.example`.
 
-Note that `JUMIO_WORKFLOW_KEY` and `JUMIO_DOCUMENT_WORKFLOW_KEY` are **different
+Note that `JUMIO_WORKFLOW_KEY` (identity) and the document workflow key are **different
 workflows** and not interchangeable.
 
 ---
@@ -502,7 +518,7 @@ src/lib/jumio/
 ├── document-mapper.ts      Jumio response → FreightID representation
 ├── document-presenter.ts   FreightID representation → API/UI shape
 ├── client.ts               + uploadCredentialPart, finalizeWorkflowExecution
-├── config.ts               + documentWorkflowKey, isJumioDocumentCheckConfigured
+├── config.ts               unchanged — the document workflow key is not configuration
 ├── types.ts                + JumioCredentialRequest/Response, JumioDocumentExtractionData
 └── verification.ts         recordJumioCallback now matches both flows
 

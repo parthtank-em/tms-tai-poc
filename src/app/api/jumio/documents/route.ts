@@ -3,6 +3,7 @@ import { toAlpha3 } from "@/lib/jumio/consent";
 import {
   ACCEPTED_MIME_TYPES,
   isKnownDocumentType,
+  isValidWorkflowKey,
   MAX_UPLOAD_BYTES,
   startDocumentCheck,
 } from "@/lib/jumio/document-check";
@@ -67,6 +68,19 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Choose the country that issued the document." }, { status: 400 });
   }
 
+  // The workflow to run comes from the form, not from configuration — see
+  // `StartDocumentCheckInput`. Only the shape is checked here; whether the
+  // tenant has this definition enabled is Jumio's answer, and it arrives as a
+  // 400 on the create call.
+  const workflowKey = String(form.get("workflowKey") ?? "").trim();
+
+  if (!isValidWorkflowKey(workflowKey)) {
+    return Response.json(
+      { error: "Enter the Jumio workflow key to run, e.g. 10170." },
+      { status: 400 },
+    );
+  }
+
   const result = await startDocumentCheck({
     file,
     // The file name is shown back to the operator, so it is trimmed to
@@ -76,6 +90,7 @@ export async function POST(request: Request): Promise<Response> {
     mimeType: file.type,
     documentType,
     country,
+    workflowKey,
   });
 
   if (!result.ok) {

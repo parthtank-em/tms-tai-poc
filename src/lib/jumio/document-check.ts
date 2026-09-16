@@ -43,27 +43,57 @@ export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 export const ACCEPTED_MIME_TYPES = ["image/jpeg", "image/png", "application/pdf"] as const;
 
 /**
- * Document types this screen offers, from Jumio's supported-document list.
+ * Document types this screen offers — Jumio's supported-document list for
+ * credential uploads, grouped the way Jumio documents them: identity-adjacent
+ * credentials, then financial records, then bills and titles.
  *
- * Not the full catalogue — it is the address- and identity-adjacent subset a
- * freight operator actually asks a driver for. Which of these a given tenant
- * can run still depends on the workflow Jumio enabled.
+ * Which of these a given tenant can actually run still depends on the workflow
+ * Jumio enabled for that account.
  */
 export const DOCUMENT_TYPES = [
-  { code: "UB", label: "Utility bill" },
+  { code: "BC", label: "Birth certificate" },
+  { code: "HCC", label: "Health care card" },
+  { code: "IC", label: "Insurance card" },
+  { code: "MEDC", label: "Medicare card" },
+  { code: "SEL", label: "School enrolment letter" },
+  { code: "SENC", label: "Seniors card" },
+  { code: "SSC", label: "Social security card" },
+  { code: "STUC", label: "Student card" },
+  { code: "WWCC", label: "Working with children check" },
   { code: "BS", label: "Bank statement" },
   { code: "CCS", label: "Credit card statement" },
-  { code: "PB", label: "Phone bill" },
-  { code: "CB", label: "Council bill" },
+  { code: "CRC", label: "Corporate resolution certificate" },
   { code: "LAG", label: "Lease agreement" },
+  { code: "LOAP", label: "Loan application" },
+  { code: "MOAP", label: "Mortgage application" },
+  { code: "SS", label: "Superannuation statement" },
+  { code: "TAC", label: "Trade association card" },
   { code: "TR", label: "Tax return" },
+  { code: "VC", label: "Voided check" },
+  { code: "CB", label: "Council bill" },
+  { code: "PB", label: "Phone bill" },
+  { code: "UB", label: "Utility bill" },
   { code: "VT", label: "Vehicle title" },
-  { code: "IC", label: "Insurance card" },
-  { code: "SSC", label: "Social security card" },
 ] as const;
+
+/**
+ * What the form starts on. The list is ordered as Jumio documents it, but the
+ * document a freight operator uploads most is an address proof, so the form
+ * opens there rather than on whichever code happens to sort first.
+ */
+export const DEFAULT_DOCUMENT_TYPE = "UB";
 
 export function isKnownDocumentType(code: string): boolean {
   return DOCUMENT_TYPES.some((entry) => entry.code === code);
+}
+
+/**
+ * Shape check only. Whether the key names a workflow this tenant has enabled is
+ * Jumio's answer to give — it comes back as a 400 on the create call, which is
+ * already surfaced. This just keeps obvious junk out of the request body.
+ */
+export function isValidWorkflowKey(key: string): boolean {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(key);
 }
 
 export type StartDocumentCheckInput = {
@@ -74,6 +104,15 @@ export type StartDocumentCheckInput = {
   documentType: string;
   /** ISO 3166-1 alpha-3. */
   country: string;
+  /**
+   * Jumio workflow definition key to run, from the form.
+   *
+   * Supplied per upload rather than from configuration: a tenant can have
+   * several Doc Proof definitions enabled, and which capabilities to run
+   * against a given file is the operator's choice — the whole point of this
+   * screen is trying one and reading the answer.
+   */
+  workflowKey: string;
 };
 
 export type StartDocumentCheckResult =
@@ -131,15 +170,14 @@ export async function startDocumentCheck(
     throw error;
   }
 
-  if (!config.documentWorkflowKey) {
-    console.error("[jumio] JUMIO_DOCUMENT_WORKFLOW_KEY is not set. See .env.example.");
-    return { ok: false, reason: "Document verification is not configured.", checkId: null };
+  if (!isValidWorkflowKey(input.workflowKey)) {
+    return { ok: false, reason: "Enter a valid Jumio workflow key.", checkId: null };
   }
 
   const check = await prisma.documentCheck.create({
     data: {
       status: "INITIATED",
-      jumioWorkflowKey: config.documentWorkflowKey,
+      jumioWorkflowKey: input.workflowKey,
       requestedType: input.documentType,
       requestedCountry: input.country,
       fileName: input.fileName,
@@ -152,7 +190,7 @@ export async function startDocumentCheck(
   const body: JumioCreateAccountRequest = {
     customerInternalReference: check.id,
     workflowDefinition: {
-      key: config.documentWorkflowKey,
+      key: input.workflowKey,
       credentials: [
         {
           category: "DOCUMENT",

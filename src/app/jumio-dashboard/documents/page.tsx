@@ -3,8 +3,8 @@ import Link from "next/link";
 import { DocumentCheckForm } from "./document-check-form";
 
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { isJumioDocumentCheckConfigured } from "@/lib/jumio/config";
-import { DOCUMENT_TYPES } from "@/lib/jumio/document-check";
+import { isJumioConfigured } from "@/lib/jumio/config";
+import { DEFAULT_DOCUMENT_TYPE, DOCUMENT_TYPES } from "@/lib/jumio/document-check";
 
 export const metadata = {
   title: "Document check · FreightID",
@@ -19,7 +19,7 @@ export const metadata = {
  * anything else on the page would be in the way of reading the answer.
  */
 export default function DocumentCheckPage() {
-  const configured = isJumioDocumentCheckConfigured();
+  const configured = isJumioConfigured();
 
   return (
     <main className="mx-auto w-full max-w-3xl px-6 py-10">
@@ -43,21 +43,23 @@ export default function DocumentCheckPage() {
       {!configured ? (
         <Card className="border-l-2 border-l-destructive">
           <CardHeader>
-            <CardTitle>Document checks are not configured</CardTitle>
+            <CardTitle>Jumio is not configured</CardTitle>
             <CardDescription>
-              This screen needs its own Jumio workflow — the one used for driver identity checks
-              runs different capabilities against a different credential. Set
-              <code className="mx-1 rounded bg-muted px-1 py-0.5 text-xs">
-                JUMIO_DOCUMENT_WORKFLOW_KEY
-              </code>
-              to a Doc Proof workflow your tenant has enabled, alongside the other
+              This screen needs the tenant credentials —
+              <code className="mx-1 rounded bg-muted px-1 py-0.5 text-xs">JUMIO_CLIENT_ID</code>,
+              <code className="mx-1 rounded bg-muted px-1 py-0.5 text-xs">JUMIO_CLIENT_SECRET</code>
+              and the rest of the
               <code className="mx-1 rounded bg-muted px-1 py-0.5 text-xs">JUMIO_*</code>
               settings. See <code className="rounded bg-muted px-1 py-0.5 text-xs">.env.example</code>.
+              The workflow to run is not one of them — you type it into the form.
             </CardDescription>
           </CardHeader>
         </Card>
       ) : (
-        <DocumentCheckForm documentTypes={DOCUMENT_TYPES} />
+        <DocumentCheckForm
+          documentTypes={DOCUMENT_TYPES}
+          defaultDocumentType={DEFAULT_DOCUMENT_TYPE}
+        />
       )}
     </main>
   );

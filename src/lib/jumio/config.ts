@@ -60,15 +60,6 @@ export type JumioConfig = {
   /** Workflow definition key from the Jumio portal. */
   workflowKey: string;
   /**
-   * Workflow definition key for supporting-document checks (Doc Proof).
-   *
-   * A different workflow from `workflowKey` because it runs different
-   * capabilities against a different credential category — see
-   * `document-check.ts`. Null when the tenant has not enabled one, which is
-   * what the documents screen reports rather than failing at upload time.
-   */
-  documentWorkflowKey: string | null;
-  /**
    * Workflow definition key for pickup re-authentication (Jumio's `10014`).
    *
    * A third definition again: it runs a selfie against the facemap captured at
@@ -173,7 +164,6 @@ export function getJumioConfig(): JumioConfig {
       read("JUMIO_RETRIEVAL_BASE_URL") ?? `https://retrieval.${datacenter}.jumio.ai`,
     ),
     workflowKey: require_("JUMIO_WORKFLOW_KEY"),
-    documentWorkflowKey: read("JUMIO_DOCUMENT_WORKFLOW_KEY"),
     authWorkflowKey: read("JUMIO_AUTH_WORKFLOW_KEY"),
     callbackUrl,
     callbackSecret,
@@ -199,22 +189,6 @@ export function isJumioConfigured(): boolean {
 export function isJumioPickupConfigured(): boolean {
   try {
     return getJumioConfig().authWorkflowKey !== null;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * True when document checks can run.
- *
- * Stricter than `isJumioConfigured`: the base credentials are not enough,
- * because the document workflow is a separate definition the tenant has to have
- * enabled. Checking it here means the screen can say so up front instead of
- * letting an operator upload a file and then fail.
- */
-export function isJumioDocumentCheckConfigured(): boolean {
-  try {
-    return getJumioConfig().documentWorkflowKey !== null;
   } catch {
     return false;
   }

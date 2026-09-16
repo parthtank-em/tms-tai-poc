@@ -19,7 +19,6 @@ const CONFIG: JumioConfig = {
   accountBaseUrl: "https://account.amer-1.jumio.ai",
   retrievalBaseUrl: "https://retrieval.amer-1.jumio.ai",
   workflowKey: "10549",
-  documentWorkflowKey: "10170",
   authWorkflowKey: "10014",
   callbackUrl: "https://example.test/api/jumio/callback?token=secret",
   callbackSecret: "secret",

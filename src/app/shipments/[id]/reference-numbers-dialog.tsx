@@ -1,15 +1,9 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 
-import {
-  addReferenceNumberAction,
-  deleteReferenceNumberAction,
-  fetchReferenceNumbers,
-  type ReferenceNumbersState,
-} from "./reference-number-actions";
+import { fetchDriver, saveDriverAction, type DriverState } from "./reference-number-actions";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,71 +15,38 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import {
   DRIVER_NAME_REFERENCE_TYPE,
+  DRIVER_PHONE_REFERENCE_TYPE,
+  EMPTY_DRIVER,
   REFERENCE_VALUE_MAX,
-  referenceKey,
-  type ReferenceNumber,
+  driverFieldsEqual,
+  normalizeDriverFields,
+  type DriverFields,
 } from "@/lib/tai/reference-types";
-
-function ReferenceRow({
-  referenceNumber,
-  shipmentId,
-  onDelete,
-  busy,
-}: {
-  referenceNumber: ReferenceNumber;
-  shipmentId: string;
-  onDelete: (formData: FormData) => void;
-  busy: boolean;
-}) {
-  const isDriverName = referenceNumber.referenceType === DRIVER_NAME_REFERENCE_TYPE;
-
-  return (
-    <li className="flex flex-wrap items-start justify-between gap-3 py-3">
-      <div className="min-w-0 space-y-1.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium">{referenceNumber.referenceType}</span>
-          {isDriverName ? <Badge variant="secondary">Driver</Badge> : null}
-        </div>
-        <p className="text-sm break-words text-muted-foreground">
-          {referenceNumber.value || "—"}
-        </p>
-      </div>
-
-      {/* Only the type this screen owns is removable — the rest come from TAI's
-          own workflows and are shown for context, not for editing here. */}
-      {isDriverName ? (
-        <form action={onDelete}>
-          <input type="hidden" name="shipmentId" value={shipmentId} />
-          <input type="hidden" name="referenceType" value={referenceNumber.referenceType} />
-          <Button type="submit" variant="outline" size="sm" disabled={busy}>
-            Remove
-          </Button>
-        </form>
-      ) : null}
-    </li>
-  );
-}
 
 export function ReferenceNumbersDialog({ shipmentId }: { shipmentId: string }) {
   const [open, setOpen] = useState(false);
-  const [state, setState] = useState<ReferenceNumbersState | null>(null);
+  const [state, setState] = useState<DriverState | null>(null);
+  const [draft, setDraft] = useState<DriverFields>(EMPTY_DRIVER);
   const [pending, startTransition] = useTransition();
-  const [busyKind, setBusyKind] = useState<"load" | "add" | "delete" | null>(null);
-  const formRef = useRef<HTMLFormElement>(null);
+  const [busyKind, setBusyKind] = useState<"load" | "save" | null>(null);
 
-  // Same shape as the alerts dialog: every path is an event handler, and each
-  // action returns the whole list, so one piece of state holds the truth.
-  function run(kind: "load" | "add" | "delete", work: () => Promise<ReferenceNumbersState>) {
+  // Same shape as the alerts dialog: every path is an event handler. Each action
+  // returns the driver as TAI now holds it, and the inputs follow that — so what
+  // is on screen after a load or a save is what was really stored, not what was
+  // typed. A failed save is the one case the two differ, and there the error
+  // beside the field says so.
+  function run(kind: "load" | "save", work: () => Promise<DriverState>) {
     setBusyKind(kind);
     startTransition(async () => {
       try {
-        setState(await work());
+        const next = await work();
+        setState(next);
+        setDraft(next.driver);
       } catch (cause) {
         setState({
-          referenceNumbers: state?.referenceNumbers ?? [],
+          driver: state?.driver ?? EMPTY_DRIVER,
           error: cause instanceof Error ? cause.message : "Something went wrong.",
         });
       } finally {
@@ -98,18 +59,20 @@ export function ReferenceNumbersDialog({ shipmentId }: { shipmentId: string }) {
     setOpen(next);
     if (!next) return;
 
-    run("load", () => fetchReferenceNumbers(shipmentId));
+    // Reopening re-reads: TAI is the only copy, and it may have moved on since
+    // the dialog was last closed.
+    setState(null);
+    setDraft(EMPTY_DRIVER);
+    run("load", () => fetchDriver(shipmentId));
   }
 
-  const referenceNumbers = state?.referenceNumbers ?? [];
+  const loaded = state !== null;
   const busy = pending;
 
-  // One driver per shipment: with one already on the list the form is closed
-  // until it is removed. Until the first load lands the list is empty, so `busy`
-  // is what keeps the form shut in the meantime rather than this.
-  const driverAdded = referenceNumbers.some(
-    (entry) => entry.referenceType === DRIVER_NAME_REFERENCE_TYPE,
-  );
+  // Nothing to save until an input differs from what TAI returned. Comparing
+  // normalized values keeps a stray space from counting as an edit.
+  const dirty =
+    loaded && !driverFieldsEqual(normalizeDriverFields(draft), normalizeDriverFields(state.driver));
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -121,87 +84,75 @@ export function ReferenceNumbersDialog({ shipmentId }: { shipmentId: string }) {
         }
       />
 
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Add driver</DialogTitle>
-          {/* Says why the list below carries rows that are not drivers: the
-              driver is one reference number among the shipment's others. */}
           <DialogDescription>
-            Add the driver for this shipment. TAI stores it as a reference number, alongside
-            the others listed below. Adding and removing write straight to TAI.
+            The driver for this shipment, as TAI holds it. TAI stores these as shipment
+            reference numbers; saving writes straight to TAI, and clearing a field removes it.
           </DialogDescription>
         </DialogHeader>
 
         <form
-          ref={formRef}
           action={(formData) => {
-            run("add", async () => {
-              const result = await addReferenceNumberAction(formData);
-              if (!result.error) {
-                formRef.current?.reset();
-              }
-              return result;
-            });
+            run("save", () => saveDriverAction(formData));
           }}
-          className="space-y-2"
+          className="space-y-4"
         >
           <input type="hidden" name="shipmentId" value={shipmentId} />
-          {/* "Driver Name" is the one type this screen writes — TAI models a
-              driver as a reference number rather than an entity. */}
-          <input type="hidden" name="referenceType" value={DRIVER_NAME_REFERENCE_TYPE} />
 
-          <Label htmlFor="referenceValue">{DRIVER_NAME_REFERENCE_TYPE}</Label>
-          <div className="flex gap-2">
+          <div className="space-y-2">
+            <Label htmlFor="driverName">{DRIVER_NAME_REFERENCE_TYPE}</Label>
             <Input
-              id="referenceValue"
-              name="value"
-              className="h-9 flex-1"
-              placeholder="Enter driver name"
+              id="driverName"
+              name="name"
+              className="h-9"
+              placeholder={loaded ? "Enter driver name" : "Loading…"}
               maxLength={REFERENCE_VALUE_MAX}
-              defaultValue=""
-              disabled={busy || driverAdded}
-              required
+              value={draft.name}
+              onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
+              disabled={busy || !loaded}
             />
+          </div>
 
-            <Button type="submit" size="lg" disabled={busy || driverAdded}>
-              {busyKind === "add" ? "Adding…" : "Add"}
+          <div className="space-y-2">
+            <Label htmlFor="driverPhone">{DRIVER_PHONE_REFERENCE_TYPE}</Label>
+            <Input
+              id="driverPhone"
+              name="phone"
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              className="h-9"
+              placeholder={loaded ? "Enter driver phone number" : "Loading…"}
+              maxLength={REFERENCE_VALUE_MAX}
+              value={draft.phone}
+              onChange={(event) => setDraft((prev) => ({ ...prev, phone: event.target.value }))}
+              disabled={busy || !loaded}
+            />
+          </div>
+
+          {state?.error ? (
+            <p role="alert" className="text-sm text-destructive">
+              {state.error}
+            </p>
+          ) : null}
+
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDraft(state?.driver ?? EMPTY_DRIVER)}
+              disabled={busy || !dirty}
+            >
+              Reset
+            </Button>
+
+            <Button type="submit" disabled={busy || !dirty}>
+              {busyKind === "save" ? "Saving…" : "Save"}
             </Button>
           </div>
         </form>
-
-        {state?.error ? (
-          <p role="alert" className="text-sm text-destructive">
-            {state.error}
-          </p>
-        ) : null}
-
-        <Separator />
-
-        <div className="max-h-80 overflow-y-auto">
-          {state === null ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">
-              Loading reference numbers…
-            </p>
-          ) : referenceNumbers.length === 0 ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">
-              No reference numbers on this shipment.
-            </p>
-          ) : (
-            <ul className="divide-y">
-              {referenceNumbers.map((referenceNumber) => (
-                <ReferenceRow
-                  key={referenceKey(referenceNumber)}
-                  referenceNumber={referenceNumber}
-                  shipmentId={shipmentId}
-                  busy={busy}
-                  onDelete={(formData) => {
-                    run("delete", () => deleteReferenceNumberAction(formData));
-                  }}
-                />
-              ))}
-            </ul>
-          )}
-        </div>
       </DialogContent>
     </Dialog>
   );

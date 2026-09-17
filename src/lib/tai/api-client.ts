@@ -1,3 +1,12 @@
+import {
+  ADDRESS_LIMITS,
+  TAI_PHONE_PATTERN,
+  type TaiShipmentType,
+  type TaiStaffPermission,
+  type TaiStaffSetting,
+  type TaiTariffSetting,
+} from "./staff-fields";
+
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 
@@ -40,6 +49,8 @@ const PATHS = {
   shipmentReferenceNumbers: `${SHIPPING_PREFIX}/ShipmentReferenceNumbers`,
   assignments: `${SHIPPING_PREFIX}/Assignments`,
   brokerStaff: `${STAFF_PREFIX}/Brokers`,
+  /** ⚠️ Singular. Reading the roster is `/Brokers`; creating one is `/Broker`. */
+  createBrokerStaff: `${STAFF_PREFIX}/Broker`,
   // Use case 3's activity log is still inferred from the findings doc — no
   // OpenAPI definition for it yet.
   activityLogs: `${SHIPPING_PREFIX}/ShipmentActivityLogs`,
@@ -751,6 +762,89 @@ export async function createAssignment(
 export function asBrokerStaff(data: unknown): PublicApiBrokerStaff[] {
   if (Array.isArray(data)) return data as PublicApiBrokerStaff[];
   return data && typeof data === "object" ? [data as PublicApiBrokerStaff] : [];
+}
+
+// --- Creating broker staff -------------------------------------------------
+
+/**
+ * `TMSFoundation.Models.PublicAPI.v2.Staff.PublicAPICreateBrokerStaffRequest`
+ *
+ * ⚠️ `organizationId` is the **only** required field in the spec — not login,
+ * not password, not email. That is almost certainly laxer than TAI's real
+ * behaviour, so the domain layer requires more than this type does.
+ */
+export type PublicApiCreateBrokerStaffRequest = {
+  /** int32 — the one field the spec marks required. */
+  organizationId: number;
+  login?: string;
+  password?: string;
+  email?: string;
+  title?: string;
+  contactName?: string;
+  referenceNumber?: string;
+  enabled?: boolean;
+  address?: PublicApiAddress;
+  phone?: string;
+  mobile?: string;
+  fax?: string;
+  includeInARCollectionNotices?: boolean;
+  invoiceNotification?: boolean;
+  shipmentStatusChangeNotification?: boolean;
+  proofOfDeliveryNotification?: boolean;
+  shipmentPickedUpStatusChangeNotification?: boolean;
+  shipmentOutForDeliveryStatusChangeNotification?: boolean;
+  shipmentDeliveredStatusChangeNotification?: boolean;
+  defaultShipmentType?: TaiShipmentType[];
+  staffSettings?: TaiStaffSetting[];
+  tariffSettings?: TaiTariffSetting[];
+  permissions?: TaiStaffPermission[];
+};
+
+/**
+ * **Create Broker Staff** — `POST /PublicApi/Staff/v2/Broker`
+ * "Create a new broker staff by organization id."
+ * operationId `PublicAPIStaff_CreateStaff`
+ *
+ * Responds 200 with a `PublicAPICreateBrokerStaffResponse` — the created person,
+ * `staffId` included — or 400 with a bare string explaining the rejection.
+ */
+export async function createBrokerStaff(
+  body: PublicApiCreateBrokerStaffRequest,
+  context: CallContext,
+): Promise<TaiCallResult> {
+  if (
+    typeof body.organizationId !== "number" ||
+    !Number.isInteger(body.organizationId) ||
+    body.organizationId < 1 ||
+    body.organizationId > INT32_MAX
+  ) {
+    return {
+      ok: false,
+      status: null,
+      error: `organizationId must be an int32 between 1 and ${INT32_MAX}.`,
+      retryable: false,
+    };
+  }
+
+  for (const field of ["phone", "mobile", "fax"] as const) {
+    const value = body[field];
+    if (value !== undefined && !TAI_PHONE_PATTERN.test(value)) {
+      return {
+        ok: false,
+        status: null,
+        error: `${field} must look like +15551234567 or +15551234567x89.`,
+        retryable: false,
+      };
+    }
+  }
+
+  for (const [field, max] of Object.entries(ADDRESS_LIMITS)) {
+    const value = body.address?.[field as keyof typeof ADDRESS_LIMITS];
+    const invalid = tooLong(value, max, `address.${field}`);
+    if (invalid) return { ok: false, status: null, error: invalid, retryable: false };
+  }
+
+  return call("POST", PATHS.createBrokerStaff, body, context);
 }
 
 /**

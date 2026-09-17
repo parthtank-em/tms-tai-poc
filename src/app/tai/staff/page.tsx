@@ -1,4 +1,7 @@
+import Link from "next/link";
+
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -30,11 +33,17 @@ function PageHeader({ count }: { count: number | null }) {
     <header className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
       <h1 className="text-2xl font-semibold tracking-tight">Staff</h1>
 
-      {count === null ? null : (
-        <p className="text-sm text-muted-foreground">
-          {count} {count === 1 ? "person" : "people"}
-        </p>
-      )}
+      <div className="flex items-center gap-3">
+        {count === null ? null : (
+          <p className="text-sm text-muted-foreground">
+            {count} {count === 1 ? "person" : "people"}
+          </p>
+        )}
+
+        <Button size="sm" render={<Link href="/tai/staff/new" />}>
+          New staff member
+        </Button>
+      </div>
     </header>
   );
 }

@@ -21,6 +21,7 @@ import { TAI_COUNTRIES } from "@/lib/tai/countries";
 // Everything here comes from `staff-fields`, which imports nothing: reaching
 // into `api-client` or `staff-create` for the same constants would pull Prisma
 // into the browser bundle.
+import { ORGANIZATION_NAME } from "@/lib/tai/organization";
 import { TAI_STAFF_PERMISSIONS, symbolLabel } from "@/lib/tai/staff-fields";
 
 /**
@@ -217,21 +218,17 @@ export function StaffForm() {
             />
             <Field name="title" label="Title" error={errors.title} />
 
-            {/* A plain numeric field: TAI publishes no organizations endpoint,
-                so there is no list to pick from — the id is typed. Non-digits
-                are stripped as they arrive rather than rejected after the fact. */}
-            <Field
-              name="organizationId"
-              label="Organization ID"
-              required
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="685263"
-              error={errors.organizationId}
-              onChange={(event) => {
-                event.currentTarget.value = event.currentTarget.value.replace(/\D/g, "");
-              }}
-            />
+            {/* Shown, not asked for. The id is fixed server-side, so this input
+                carries no `name` and never reaches the submitted form data. */}
+            <Field name="organization" label="Organization">
+              <Input
+                id="organization"
+                value={ORGANIZATION_NAME}
+                readOnly
+                aria-readonly
+                className="bg-muted/50 text-muted-foreground"
+              />
+            </Field>
 
             <Field
               name="referenceNumber"

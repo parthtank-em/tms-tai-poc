@@ -13,6 +13,8 @@ export default function NewStaffPage() {
           ← Staff
         </Link>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">New staff member</h1>
+        {/* The organization the person joins is on the form itself, read-only,
+            so it is not repeated here. */}
         <p className="mt-1 text-sm text-muted-foreground">
           Creates the person in TAI. There is no local copy — the roster is theirs.
         </p>

@@ -30,7 +30,6 @@ export async function createStaffAction(formData: FormData): Promise<CreateStaff
     confirmPassword: text(formData, "confirmPassword"),
     email: text(formData, "email"),
     title: text(formData, "title"),
-    organizationId: text(formData, "organizationId"),
     referenceNumber: text(formData, "referenceNumber"),
     // The form's Status select carries "Active"/"Inactive"; anything else is a
     // hand-crafted request, and inactive is the safer reading of one.

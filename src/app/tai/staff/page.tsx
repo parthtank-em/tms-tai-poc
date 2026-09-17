@@ -79,30 +79,20 @@ function StaffRow({ member }: { member: StaffMember }) {
     <TableRow>
       <TableCell className="font-medium tabular-nums">{member.staffId}</TableCell>
 
-      <TableCell className="max-w-[14rem] truncate" title={member.name}>
-        {member.name}
+      <TableCell className="max-w-[10rem] truncate" title={member.login ?? ""}>
+        {formatText(member.login)}
       </TableCell>
 
-      <TableCell className="max-w-[12rem] truncate" title={member.title ?? ""}>
-        {formatText(member.title)}
+      <TableCell className="max-w-[14rem] truncate" title={member.name}>
+        {member.name}
       </TableCell>
 
       <TableCell className="max-w-[16rem] truncate" title={member.email ?? ""}>
         <ContactCell value={member.email} href={member.email ? `mailto:${member.email}` : null} />
       </TableCell>
 
-      <TableCell className="max-w-[10rem] truncate" title={member.login ?? ""}>
-        {formatText(member.login)}
-      </TableCell>
-
       <TableCell className="whitespace-nowrap tabular-nums">
         <ContactCell value={member.phone} href={member.phone ? `tel:${member.phone}` : null} />
-      </TableCell>
-
-      <TableCell className="whitespace-nowrap">{formatText(member.location)}</TableCell>
-
-      <TableCell className="tabular-nums text-muted-foreground">
-        {member.organizationId ?? "—"}
       </TableCell>
 
       <TableCell>
@@ -159,13 +149,10 @@ export default async function StaffPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Staff ID</TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Title</TableHead>
-                <TableHead>Email</TableHead>
                 <TableHead>Login</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Email</TableHead>
                 <TableHead>Phone</TableHead>
-                <TableHead>Location</TableHead>
-                <TableHead>Org ID</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow>
             </TableHeader>

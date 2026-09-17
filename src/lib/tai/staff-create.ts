@@ -4,6 +4,9 @@ import {
   type PublicApiCreateBrokerStaffRequest,
 } from "./api-client";
 import { isTaiCountry } from "./countries";
+// Set server-side and never carried in the form, so a crafted request cannot
+// file someone under a different organization.
+import { ORGANIZATION_ID } from "./organization";
 import { ADDRESS_LIMITS, TAI_PHONE_PATTERN, TAI_STAFF_PERMISSIONS } from "./staff-fields";
 
 /**
@@ -26,7 +29,6 @@ export type StaffDraft = {
   confirmPassword: string;
   email: string;
   title: string;
-  organizationId: string;
   referenceNumber: string;
   enabled: boolean;
   phone: string;
@@ -81,15 +83,6 @@ function validate(draft: StaffDraft): FieldErrors {
     errors.email = "Enter an email address.";
   } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     errors.email = "Enter a valid email address.";
-  }
-
-  // Typed rather than picked, so the server is the only thing standing between
-  // a slip of the keyboard and a staff member filed under the wrong org.
-  const organizationId = Number(draft.organizationId);
-  if (!draft.organizationId.trim()) {
-    errors.organizationId = "Enter an organization ID.";
-  } else if (!Number.isInteger(organizationId) || organizationId < 1) {
-    errors.organizationId = "The organization ID must be a whole number above zero.";
   }
 
   for (const field of ["phone", "mobile", "fax"] as const) {
@@ -163,7 +156,7 @@ export async function createStaff(draft: StaffDraft): Promise<CreateStaffResult>
   const contactName = clean(draft.contactName);
 
   const body: PublicApiCreateBrokerStaffRequest = {
-    organizationId: Number(draft.organizationId),
+    organizationId: ORGANIZATION_ID,
     login: clean(draft.login),
     password: draft.password,
     email: clean(draft.email),

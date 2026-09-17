@@ -223,15 +223,18 @@ describe("lookupInsurance", () => {
     expect(withToken.mock.calls[0][1]?.headers).toMatchObject({ "X-App-Token": "test-token" });
   });
 
-  it("reports how many rows arrived alongside the deduped ones", async () => {
-    stubFetch(jsonResponse([EXCESS, EXCESS, PRIMARY]));
+  it("hands back the response untouched while the policies are deduped", async () => {
+    const body = [EXCESS, EXCESS, PRIMARY];
+    stubFetch(jsonResponse(body));
 
     const result = await lookupInsurance("80806");
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    // The raw panel is what the table gets checked against, so it keeps the
+    // duplicates the dataset sent.
+    expect(result.raw).toEqual(body);
     expect(result.rowCount).toBe(3);
-    expect(result.raw).toHaveLength(2);
     expect(result.policies).toHaveLength(2);
   });
 

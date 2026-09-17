@@ -6,7 +6,6 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -18,7 +17,6 @@ import {
 } from "@/components/ui/table";
 import type { FmcsaInsurancePolicy, FmcsaInsuranceResult } from "@/lib/fmcsa/insurance";
 
-/** The dataset omits what it has no value for, so a gap here is normal. */
 const EMPTY = "—";
 
 const DATE = new Intl.DateTimeFormat("en-US", {
@@ -29,9 +27,8 @@ const DATE = new Intl.DateTimeFormat("en-US", {
 });
 
 /**
- * The dates arrive as `YYYYMMDD` with no zone and mean a calendar day, so they
- * are read as UTC — parsed locally, a filing dated the 1st reads as the 31st
- * anywhere west of Greenwich.
+ * The dates mean a calendar day and carry no zone, so they are read as UTC —
+ * parsed locally, a filing dated the 1st reads as the 31st west of Greenwich.
  */
 function formatDate(iso: string | null): string {
   if (!iso) return EMPTY;
@@ -50,48 +47,29 @@ function formatAmount(value: string | null): string {
   return `$${fraction ? `${grouped}.${fraction}` : grouped}`;
 }
 
-/** "BI&PD (1) · Primary (P)" — the label never replaces the filed code. */
-function describeCode(label: string | null, code: string | null): string {
-  if (!code) return label ?? EMPTY;
-  return label ? `${label} (${code})` : code;
+/**
+ * Self-insured filings carry "0" or "NONE" where a policy number goes. Both are
+ * placeholders for "there isn't one", and printing them reads as a real policy
+ * numbered zero.
+ */
+function formatPolicyNumber(value: string | null): string {
+  if (!value || value === "0" || value.toUpperCase() === "NONE") return EMPTY;
+  return value;
 }
 
-function PolicyRow({ policy }: { policy: FmcsaInsurancePolicy }) {
-  return (
-    <TableRow>
-      <TableCell className="align-top">
-        <div className="flex items-center gap-2">
-          <span>{describeCode(policy.typeLabel, policy.typeCode)}</span>
-          {policy.isLatestForCoverage && (
-            <Badge variant="secondary" title="Newest filing for this coverage type and class">
-              Latest
-            </Badge>
-          )}
-        </div>
-        <div className="text-xs text-muted-foreground">
-          {describeCode(policy.classLabel, policy.classCode)}
-        </div>
-      </TableCell>
+/**
+ * "BI&PD" or "BI&PD · Excess".
+ *
+ * Primary is the ordinary case and adding it to every row says nothing, so only
+ * a non-primary class is named. The filed codes are dropped from the table
+ * entirely — they duplicate the label beside them, and the raw panel has them
+ * for anyone checking a mapping.
+ */
+function describeCoverage(policy: FmcsaInsurancePolicy): string {
+  const type = policy.typeLabel ?? policy.typeCode ?? EMPTY;
+  const isPrimary = policy.classCode?.toUpperCase() === "P";
 
-      <TableCell className="align-top whitespace-normal">
-        <div>{policy.insuranceCompanyName ?? EMPTY}</div>
-        <div className="text-xs text-muted-foreground">
-          {describeCode(policy.formLabel, policy.formCode)}
-        </div>
-      </TableCell>
-
-      <TableCell className="align-top">{policy.policyNumber ?? EMPTY}</TableCell>
-      <TableCell className="align-top tabular-nums">
-        {formatAmount(policy.maxCoverageAmount)}
-      </TableCell>
-      <TableCell className="align-top tabular-nums">
-        {formatAmount(policy.underlyingLimitAmount)}
-      </TableCell>
-      <TableCell className="align-top">{formatDate(policy.effectiveDate)}</TableCell>
-      <TableCell className="align-top">{formatDate(policy.filedDate)}</TableCell>
-      <TableCell className="align-top">{policy.docketNumber ?? EMPTY}</TableCell>
-    </TableRow>
-  );
+  return !isPrimary && policy.classLabel ? `${type} · ${policy.classLabel}` : type;
 }
 
 export function InsuranceResult({ result }: { result: FmcsaInsuranceResult }) {
@@ -99,10 +77,7 @@ export function InsuranceResult({ result }: { result: FmcsaInsuranceResult }) {
     <Card>
       <CardHeader>
         <CardTitle>Insurance filings</CardTitle>
-        <CardDescription>
-          From the FMCSA <span className="font-mono text-xs">Motus Insur — All With History</span>{" "}
-          dataset on data.transportation.gov.
-        </CardDescription>
+        <CardDescription>From FMCSA&rsquo;s insurance filing records.</CardDescription>
       </CardHeader>
 
       <CardContent className="space-y-6">
@@ -120,46 +95,37 @@ export function InsuranceResult({ result }: { result: FmcsaInsuranceResult }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>Coverage</TableHead>
-                  <TableHead>Insurer / form</TableHead>
+                  <TableHead>Insurer</TableHead>
                   <TableHead>Policy no.</TableHead>
-                  <TableHead>Max coverage</TableHead>
-                  <TableHead>Underlying limit</TableHead>
+                  <TableHead>Amount</TableHead>
                   <TableHead>Effective</TableHead>
-                  <TableHead>Filed</TableHead>
-                  <TableHead>Docket</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {result.policies.map((policy, index) => (
-                  <PolicyRow
+                  <TableRow
                     // Nothing in the dataset is unique per filing — a carrier can
                     // file the same policy number twice under different forms —
                     // so position in the sorted list is the only stable key.
                     key={index}
-                    policy={policy}
-                  />
+                  >
+                    <TableCell>{describeCoverage(policy)}</TableCell>
+                    <TableCell className="whitespace-normal">
+                      {policy.insuranceCompanyName ?? EMPTY}
+                    </TableCell>
+                    <TableCell>{formatPolicyNumber(policy.policyNumber)}</TableCell>
+                    <TableCell className="tabular-nums">
+                      {formatAmount(policy.maxCoverageAmount)}
+                    </TableCell>
+                    <TableCell>{formatDate(policy.effectiveDate)}</TableCell>
+                  </TableRow>
                 ))}
               </TableBody>
             </Table>
 
-            {/*
-              The dataset holds active and pending filings with no cancellation
-              date, so "Latest" is what the columns support and not a statement
-              that the policy is in force. Saying so here keeps the badge from
-              being read as a coverage confirmation.
-            */}
-            <p className="text-xs text-muted-foreground">
-              <strong className="font-medium">Latest</strong> marks the newest filing for each
-              coverage type and class. The dataset carries active and pending filings with no
-              cancellation date, so it does not confirm coverage is in force today — verify a
-              certificate before relying on it.
-            </p>
-
             <Accordion>
               <AccordionItem value="raw-insurance">
-                <AccordionTrigger>
-                  Raw response ({result.raw.length} of {result.rowCount} rows, duplicates removed)
-                </AccordionTrigger>
+                <AccordionTrigger>Raw response ({result.rowCount} rows)</AccordionTrigger>
                 <AccordionContent>
                   <pre className="max-h-96 overflow-auto rounded-lg bg-muted p-3 text-xs">
                     {JSON.stringify(result.raw, null, 2)}

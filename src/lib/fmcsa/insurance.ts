@@ -109,9 +109,9 @@ export type FmcsaInsuranceResult =
       ok: true;
       /** Deduped and sorted. Empty means the carrier has no filings on record. */
       policies: FmcsaInsurancePolicy[];
-      /** The deduped rows exactly as returned, for the raw JSON view. */
+      /** The response body verbatim, for the raw JSON view. */
       raw: unknown[];
-      /** How many rows the dataset returned before duplicates were collapsed. */
+      /** How many rows the dataset returned, duplicates included. */
       rowCount: number;
     }
   | { ok: false; failure: FmcsaInsuranceFailure; message: string };
@@ -336,24 +336,8 @@ export async function lookupInsurance(dotNumberInput: string): Promise<FmcsaInsu
 
   const policies = normalizePolicies(body);
 
-  return {
-    ok: true,
-    policies,
-    // Deduped, so the raw panel matches the table row for row instead of
-    // showing the twelve copies the extract sent.
-    raw: dedupeRaw(body),
-    rowCount: body.length,
-  };
-}
-
-/** The raw rows with exact duplicates removed, in the order they arrived. */
-function dedupeRaw(rows: unknown[]): unknown[] {
-  const seen = new Set<string>();
-
-  return rows.filter((row) => {
-    const key = JSON.stringify(row);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  // `raw` is the body untouched, duplicates and all. The deduping above is how
+  // the table reads; the raw panel is there to check the table against, which
+  // it cannot do if it has been through the same filter.
+  return { ok: true, policies, raw: body, rowCount: body.length };
 }

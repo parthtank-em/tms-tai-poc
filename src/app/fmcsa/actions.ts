@@ -1,6 +1,7 @@
 "use server";
 
 import { lookupCarrier, type FmcsaLookupResult } from "@/lib/fmcsa/client";
+import { lookupInsurance, type FmcsaInsuranceResult } from "@/lib/fmcsa/insurance";
 import { requireSession } from "@/lib/auth/guard";
 
 /**
@@ -10,7 +11,12 @@ import { requireSession } from "@/lib/auth/guard";
  */
 export type CarrierLookupState =
   | { status: "idle" }
-  | { status: "done"; dotNumber: string; result: FmcsaLookupResult };
+  | {
+      status: "done";
+      dotNumber: string;
+      result: FmcsaLookupResult;
+      insurance: FmcsaInsuranceResult;
+    };
 
 /**
  * Runs the lookup server-side so `FMCSA_WEB_KEY` stays out of the browser.
@@ -27,5 +33,13 @@ export async function lookupCarrierAction(
 
   const dotNumber = String(formData.get("dotNumber") ?? "").trim();
 
-  return { status: "done", dotNumber, result: await lookupCarrier(dotNumber) };
+  // Two unrelated services — QCMobile for the carrier, the open-data portal for
+  // the insurance filings — so they run together and are reported separately.
+  // Neither one failing should cost the operator the other's answer.
+  const [result, insurance] = await Promise.all([
+    lookupCarrier(dotNumber),
+    lookupInsurance(dotNumber),
+  ]);
+
+  return { status: "done", dotNumber, result, insurance };
 }

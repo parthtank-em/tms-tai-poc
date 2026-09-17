@@ -3,6 +3,7 @@
 import { useActionState, useState } from "react";
 
 import { lookupCarrierAction, type CarrierLookupState } from "./actions";
+import { InsuranceResult } from "./insurance-result";
 
 import {
   Accordion,
@@ -158,6 +159,16 @@ export function CarrierLookup() {
           retrievalDate={state.result.retrievalDate}
         />
       )}
+
+      {/*
+        The filings come from the open-data portal rather than QCMobile, so they
+        need no webKey and are shown whenever the number itself was usable —
+        including when the carrier call failed for a reason of its own.
+      */}
+      {state.status === "done" &&
+        !(state.insurance.ok === false && state.insurance.failure === "invalid-dot") && (
+          <InsuranceResult result={state.insurance} />
+        )}
     </div>
   );
 }

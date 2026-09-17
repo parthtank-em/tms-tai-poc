@@ -667,6 +667,20 @@ export type PublicApiBrokerStaff = {
   mobile?: string;
   fax?: string;
   address?: PublicApiAddress;
+
+  // The rest of the schema. The list view needs none of it; the detail page
+  // shows all of it, which is the difference between the two readings.
+  includeInARCollectionNotices?: boolean;
+  invoiceNotification?: boolean;
+  shipmentStatusChangeNotification?: boolean;
+  proofOfDeliveryNotification?: boolean;
+  shipmentPickedUpStatusChangeNotification?: boolean;
+  shipmentOutForDeliveryStatusChangeNotification?: boolean;
+  shipmentDeliveredStatusChangeNotification?: boolean;
+  defaultShipmentType?: TaiShipmentType[];
+  staffSettings?: TaiStaffSetting[];
+  tariffSettings?: TaiTariffSetting[];
+  permissions?: TaiStaffPermission[];
 };
 
 /**

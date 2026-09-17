@@ -42,7 +42,7 @@ function toLabel(staff: PublicApiBrokerStaff): string {
 }
 
 /** Title and email disambiguate a roster where names repeat. */
-function toDetail(staff: PublicApiBrokerStaff, label: string): string | null {
+function toOptionDetail(staff: PublicApiBrokerStaff, label: string): string | null {
   const parts = [staff.title, staff.email]
     .map((value) => (typeof value === "string" ? value.trim() : ""))
     .filter((value) => value.length > 0 && value !== label);
@@ -68,7 +68,7 @@ function toOptions(data: unknown): StaffOption[] {
     })
     .map((staff) => {
       const label = toLabel(staff);
-      return { id: staff.staffId as number, label, detail: toDetail(staff, label) };
+      return { id: staff.staffId as number, label, detail: toOptionDetail(staff, label) };
     })
     .sort((a, b) => a.label.localeCompare(b.label));
 }
@@ -212,4 +212,104 @@ export async function listBrokerStaff(): Promise<StaffDirectoryResult> {
     .sort((a, b) => a.name.localeCompare(b.name));
 
   return { staff, error: null };
+}
+
+// --- One person, in full ---------------------------------------------------
+
+/**
+ * One staff member, as `/tai/staff/<id>` shows them: the fields the create form
+ * sends, read back **one for one**.
+ *
+ * Deliberately not built on `StaffMember`. The table merges — `phone` falls
+ * back to `mobile`, the address collapses to a city line, a `title` matching the
+ * name is dropped — because a column can only say one thing. On a detail page
+ * those merges lie: a Phone row showing a mobile number, or an address whose
+ * parts cannot be told apart, is worse than an empty row. Every field here is
+ * the raw value TAI returned, and `null` means TAI sent nothing.
+ *
+ * Narrower than the response schema on purpose. TAI also returns the seven
+ * notification flags, `defaultShipmentType`, `staffSettings` and
+ * `tariffSettings`; the form sets none of them, so this does not claim to show
+ * them. `PublicApiBrokerStaff` still types them — mirroring the spec is a
+ * different job from deciding what a page displays.
+ */
+export type StaffDetail = {
+  staffId: number;
+  /** Heading only. The card shows `contactName`, `login` and `email` separately. */
+  headingName: string;
+  contactName: string | null;
+  login: string | null;
+  email: string | null;
+  title: string | null;
+  referenceNumber: string | null;
+  organizationId: number | null;
+  enabled: boolean | null;
+  phone: string | null;
+  mobile: string | null;
+  fax: string | null;
+  address: {
+    streetAddress: string | null;
+    streetAddressTwo: string | null;
+    city: string | null;
+    state: string | null;
+    zipCode: string | null;
+    country: string | null;
+    contactName: string | null;
+  };
+  permissions: string[];
+};
+
+function toStaffDetail(staff: PublicApiBrokerStaff): StaffDetail {
+  return {
+    staffId: staff.staffId as number,
+    headingName: toLabel(staff),
+    contactName: text(staff.contactName),
+    login: text(staff.login),
+    email: text(staff.email),
+    title: text(staff.title),
+    referenceNumber: text(staff.referenceNumber),
+    organizationId: typeof staff.organizationId === "number" ? staff.organizationId : null,
+    enabled: typeof staff.enabled === "boolean" ? staff.enabled : null,
+    phone: text(staff.phone),
+    mobile: text(staff.mobile),
+    fax: text(staff.fax),
+    address: {
+      streetAddress: text(staff.address?.streetAddress),
+      streetAddressTwo: text(staff.address?.streetAddressTwo),
+      city: text(staff.address?.city),
+      state: text(staff.address?.state),
+      zipCode: text(staff.address?.zipCode),
+      country: text(staff.address?.country),
+      contactName: text(staff.address?.contactName),
+    },
+    permissions: [...(staff.permissions ?? [])],
+  };
+}
+
+export type StaffDetailResult = { staff: StaffDetail | null; error: string | null };
+
+/**
+ * Reads one person through the same `GET /Staff/v2/Brokers` the roster uses,
+ * narrowed by its `staffId` filter.
+ *
+ * TAI still answers with an array, and has been seen returning a row more than
+ * once, so the response is matched on the id rather than trusted to hold
+ * exactly one element. A filter TAI ignored would otherwise hand back the whole
+ * roster and the page would render whoever happened to be first.
+ */
+export async function getStaffMember(staffId: number): Promise<StaffDetailResult> {
+  if (!Number.isInteger(staffId) || staffId < 1) {
+    return { staff: null, error: null };
+  }
+
+  const result = await getBrokerStaff({ staffId }, { attempt: 1 });
+
+  if (!result.ok) {
+    // The raw TAI error stays in `tai_api_calls`; the page gets the outcome.
+    return { staff: null, error: "Could not load this staff member from TAI." };
+  }
+
+  const match = asBrokerStaff(result.data).find((entry) => entry.staffId === staffId);
+
+  return { staff: match ? toStaffDetail(match) : null, error: null };
 }

@@ -1,3 +1,4 @@
+import { EyeIcon } from "lucide-react";
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
@@ -77,7 +78,14 @@ function ContactCell({ value, href }: { value: string | null; href: string | nul
 function StaffRow({ member }: { member: StaffMember }) {
   return (
     <TableRow>
-      <TableCell className="font-medium tabular-nums">{member.staffId}</TableCell>
+      <TableCell>
+        <Link
+          href={`/tai/staff/${member.staffId}`}
+          className="font-medium tabular-nums underline-offset-4 hover:underline"
+        >
+          {member.staffId}
+        </Link>
+      </TableCell>
 
       <TableCell className="max-w-[10rem] truncate" title={member.login ?? ""}>
         {formatText(member.login)}
@@ -97,6 +105,17 @@ function StaffRow({ member }: { member: StaffMember }) {
 
       <TableCell>
         <EnabledBadge enabled={member.enabled} />
+      </TableCell>
+
+      <TableCell className="text-right">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`View staff member ${member.staffId}`}
+          render={<Link href={`/tai/staff/${member.staffId}`} />}
+        >
+          <EyeIcon />
+        </Button>
       </TableCell>
     </TableRow>
   );
@@ -154,6 +173,7 @@ export default async function StaffPage() {
                 <TableHead>Email</TableHead>
                 <TableHead>Phone</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

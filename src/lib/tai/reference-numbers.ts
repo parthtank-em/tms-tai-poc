@@ -7,6 +7,7 @@ import {
   type PublicApiShipmentReferenceNumberV2,
 } from "./api-client";
 import {
+  DRIVER_FIELD_KEYS,
   DRIVER_FIELD_TYPES,
   REFERENCE_VALUE_MAX,
   normalizeDriverFields,
@@ -150,7 +151,7 @@ export async function getDriver(shipmentId: string): Promise<DriverResult> {
  * the meantime is compared against what is really stored.
  *
  * Deletes go first and in one call, adds follow in one call: clearing the name
- * while setting the phone must not leave the delete of one riding on the
+ * while setting the email must not leave the delete of one riding on the
  * success of the other.
  */
 export async function saveDriver(
@@ -172,7 +173,7 @@ export async function saveDriver(
   const typesToDelete: string[] = [];
   const entriesToAdd: ReferenceNumber[] = [];
 
-  for (const key of Object.keys(DRIVER_FIELD_TYPES) as (keyof DriverFields)[]) {
+  for (const key of DRIVER_FIELD_KEYS) {
     const referenceType = DRIVER_FIELD_TYPES[key];
     const was = current.driver[key];
     const now = next[key];

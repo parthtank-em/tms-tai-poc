@@ -15,10 +15,15 @@
  * These are TAI's own type names, spelled exactly as it returns them — the
  * phone number is "Driver Cell Phone Number", spaced, not "DriverCellPhoneNumber".
  * Read and write use the same string: the type is how a row is addressed, so a
- * value written under one spelling is invisible to a read of the other.
+ * value written under one spelling is invisible to a read of the other, which is
+ * a silent failure — the field simply stays blank.
+ *
+ * The email type is one configured on the TAI org rather than one of TAI's
+ * built-ins, so it is the org's spelling that has to match here.
  */
 export const DRIVER_NAME_REFERENCE_TYPE = "Driver Name";
 export const DRIVER_PHONE_REFERENCE_TYPE = "Driver Cell Phone Number";
+export const DRIVER_EMAIL_REFERENCE_TYPE = "Driver Email";
 
 /** `value` is free text in the spec; this is our own sanity bound. */
 export const REFERENCE_VALUE_MAX = 200;
@@ -29,21 +34,33 @@ export type ReferenceNumber = {
 };
 
 /**
- * The driver as this screen shows it: one input per field. The reference types
- * behind them stay on this side of the boundary so the dialog deals in `name`
- * and `phone` rather than in TAI's type names.
+ * The driver as this screen shows it: one input per field, mapped to the TAI
+ * reference type that holds it. This object is the single list of driver
+ * fields — the type, the empty value and every helper below are derived from
+ * it, so adding a fourth field is one line here and one input in the dialog.
+ *
+ * The reference types stay on this side of the boundary so the dialog deals in
+ * `name` and `email` rather than in TAI's type names.
  */
-export type DriverFields = {
-  name: string;
-  phone: string;
-};
-
-export const DRIVER_FIELD_TYPES: Record<keyof DriverFields, string> = {
+export const DRIVER_FIELD_TYPES = {
   name: DRIVER_NAME_REFERENCE_TYPE,
   phone: DRIVER_PHONE_REFERENCE_TYPE,
-};
+  email: DRIVER_EMAIL_REFERENCE_TYPE,
+} as const;
 
-export const EMPTY_DRIVER: DriverFields = { name: "", phone: "" };
+export type DriverField = keyof typeof DRIVER_FIELD_TYPES;
+export type DriverFields = Record<DriverField, string>;
+
+/** Iteration order is the order the fields are declared above, and so is the
+ * order they are written to TAI — nothing depends on it, but it keeps the
+ * request bodies in the call log readable. */
+export const DRIVER_FIELD_KEYS = Object.keys(DRIVER_FIELD_TYPES) as DriverField[];
+
+function mapDriverFields(value: (key: DriverField) => string): DriverFields {
+  return Object.fromEntries(DRIVER_FIELD_KEYS.map((key) => [key, value(key)])) as DriverFields;
+}
+
+export const EMPTY_DRIVER: DriverFields = mapDriverFields(() => "");
 
 /**
  * Pulls the driver out of a shipment's reference numbers. A type TAI does not
@@ -55,13 +72,9 @@ export const EMPTY_DRIVER: DriverFields = { name: "", phone: "" };
  * choose between identical rows.
  */
 export function toDriverFields(entries: ReferenceNumber[]): DriverFields {
-  const firstValue = (referenceType: string) =>
-    entries.find((entry) => entry.referenceType === referenceType)?.value ?? "";
-
-  return {
-    name: firstValue(DRIVER_NAME_REFERENCE_TYPE),
-    phone: firstValue(DRIVER_PHONE_REFERENCE_TYPE),
-  };
+  return mapDriverFields(
+    (key) => entries.find((entry) => entry.referenceType === DRIVER_FIELD_TYPES[key])?.value ?? "",
+  );
 }
 
 /**
@@ -82,12 +95,9 @@ export function normalizeReferenceValue(value: string): string {
 }
 
 export function normalizeDriverFields(fields: DriverFields): DriverFields {
-  return {
-    name: normalizeReferenceValue(fields.name),
-    phone: normalizeReferenceValue(fields.phone),
-  };
+  return mapDriverFields((key) => normalizeReferenceValue(fields[key]));
 }
 
 export function driverFieldsEqual(a: DriverFields, b: DriverFields): boolean {
-  return a.name === b.name && a.phone === b.phone;
+  return DRIVER_FIELD_KEYS.every((key) => a[key] === b[key]);
 }

@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  DRIVER_EMAIL_REFERENCE_TYPE,
   DRIVER_NAME_REFERENCE_TYPE,
   DRIVER_PHONE_REFERENCE_TYPE,
   EMPTY_DRIVER,
@@ -128,6 +129,25 @@ export function ReferenceNumbersDialog({ shipmentId }: { shipmentId: string }) {
               maxLength={REFERENCE_VALUE_MAX}
               value={draft.phone}
               onChange={(event) => setDraft((prev) => ({ ...prev, phone: event.target.value }))}
+              disabled={busy || !loaded}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="driverEmail">{DRIVER_EMAIL_REFERENCE_TYPE}</Label>
+            <Input
+              id="driverEmail"
+              name="email"
+              // Deliberately not `type="email"`: the browser would block a save
+              // over a value TAI already holds, and the field's job is to show
+              // what is stored. TAI takes the string either way.
+              inputMode="email"
+              autoComplete="email"
+              className="h-9"
+              placeholder={loaded ? "Enter driver email" : "Loading…"}
+              maxLength={REFERENCE_VALUE_MAX}
+              value={draft.email}
+              onChange={(event) => setDraft((prev) => ({ ...prev, email: event.target.value }))}
               disabled={busy || !loaded}
             />
           </div>

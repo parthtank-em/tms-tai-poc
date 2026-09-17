@@ -143,12 +143,6 @@ export default async function ShipmentDetailPage({
                 <Field label="MC number">{formatText(shipment.carrierMcNumber)}</Field>
                 <Field label="SCAC">{formatText(shipment.carrierScac)}</Field>
                 <Field label="Phone">{formatText(shipment.carrierPhone)}</Field>
-                <Field label="Driver (from TAI)">
-                  {formatText(shipment.secondaryDriverName)}
-                </Field>
-                <Field label="Driver phone (from TAI)">
-                  {formatText(shipment.secondaryDriverPhone)}
-                </Field>
               </dl>
             </CardContent>
           </Card>

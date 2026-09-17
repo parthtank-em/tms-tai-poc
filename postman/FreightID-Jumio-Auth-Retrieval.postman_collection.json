@@ -1,0 +1,218 @@
+{
+  "info": {
+    "_postman_id": "8f3c1a52-2d41-4f7e-9b0c-6a7d5e1c4b90",
+    "name": "FreightID — Jumio Auth & Workflow Retrieval",
+    "description": "Two requests against Jumio's live API: obtain a bearer token, then read back a workflow execution result.\n\nThese are steps 1 and 4 of the flow in docs/Jumio_SDK_API_Flow.md. Steps 2 and 3 (create account, upload, finalize) are not included — this collection is for inspecting a workflow the app has already started.\n\nHosts default to the amer-1 datacenter, matching JUMIO_DATACENTER in .env. Each is a separate hostname: auth, account and retrieval are not interchangeable.\n\nSetup:\n1. Collection → Variables → set `clientId` and `clientSecret` from JUMIO_CLIENT_ID / JUMIO_CLIENT_SECRET. Set **Current value**, not Initial value, so the secret is not synced to Postman's cloud.\n2. Run \"Step 1\". The test script stores `accessToken` for you.\n3. Set `accountId` and `workflowExecutionId` — they are the `jumio_account_id` and `jumio_workflow_id` columns on `driver_verifications` / `document_checks`.\n4. Run \"Step 4\".",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "variable": [
+    {
+      "key": "authHost",
+      "value": "https://auth.amer-1.jumio.ai",
+      "type": "string"
+    },
+    {
+      "key": "retrievalHost",
+      "value": "https://retrieval.amer-1.jumio.ai",
+      "type": "string"
+    },
+    {
+      "key": "userAgent",
+      "value": "FreightID FreightID-POC/1.0",
+      "type": "string"
+    },
+    {
+      "key": "clientId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "clientSecret",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "accountId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "workflowExecutionId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Step 1 — Get Access Token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"200 OK\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "if (pm.response.code === 401) {",
+              "    console.log(\"401 — clientId / clientSecret do not match a Jumio API credential.\");",
+              "}",
+              "",
+              "if (pm.response.code === 200) {",
+              "    var body = pm.response.json();",
+              "",
+              "    pm.test(\"access_token present\", function () {",
+              "        pm.expect(body.access_token).to.be.a(\"string\").and.not.empty;",
+              "    });",
+              "",
+              "    if (body.access_token) {",
+              "        pm.collectionVariables.set(\"accessToken\", body.access_token);",
+              "        console.log(\"Token stored. Expires in \" + (body.expires_in || 3600) + \"s.\");",
+              "    }",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "{{clientId}}",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{clientSecret}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "User-Agent",
+            "value": "{{userAgent}}"
+          }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "client_credentials",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{authHost}}/oauth2/token",
+          "host": [
+            "{{authHost}}"
+          ],
+          "path": [
+            "oauth2",
+            "token"
+          ]
+        },
+        "description": "OAuth 2.0 client-credentials grant — mirrors src/lib/jumio/auth.ts.\n\nBasic auth appears here and only here, to obtain the bearer token. Every API call afterwards is Bearer; this is not the legacy Basic-auth API integration.\n\nThe token is valid for 3600s and this endpoint is rate limited to 10 requests/second, so reuse the token rather than re-requesting it per call. The app caches it in memory and refreshes 120s before expiry.\n\nResponse:\n{ \"access_token\": \"...\", \"expires_in\": 3600, \"token_type\": \"Bearer\" }"
+      },
+      "response": []
+    },
+    {
+      "name": "Step 4 — Retrieve Workflow Execution",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 404) {",
+              "    console.log(\"404 — the workflow is most likely not retrievable yet, not missing. Wait a few seconds and re-send.\");",
+              "}",
+              "",
+              "if (pm.response.code === 401) {",
+              "    console.log(\"401 — the token has expired or was never stored. Re-run Step 1.\");",
+              "}",
+              "",
+              "pm.test(\"200 OK\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "if (pm.response.code === 200) {",
+              "    var body = pm.response.json();",
+              "    var status = body.workflow && body.workflow.status;",
+              "    var decision = body.decision && body.decision.type;",
+              "    var risk = body.decision && body.decision.risk && body.decision.risk.score;",
+              "",
+              "    console.log(\"status=\" + status + \"  decision=\" + decision + \"  risk=\" + risk);",
+              "",
+              "    pm.test(\"workflow reached a terminal state\", function () {",
+              "        pm.expect([\"PROCESSED\", \"SESSION_EXPIRED\", \"TOKEN_EXPIRED\"]).to.include(status);",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{accessToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "User-Agent",
+            "value": "{{userAgent}}"
+          }
+        ],
+        "url": {
+          "raw": "{{retrievalHost}}/api/v1/accounts/{{accountId}}/workflow-executions/{{workflowExecutionId}}",
+          "host": [
+            "{{retrievalHost}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{accountId}}",
+            "workflow-executions",
+            "{{workflowExecutionId}}"
+          ]
+        },
+        "description": "The full workflow result — decision, risk score, and each capability's outcome (extraction, similarity, liveness, usability, dataChecks, imageChecks). Mirrors JumioClient.retrieveWorkflow in src/lib/jumio/client.ts.\n\nNo request body. Uses the tenant bearer token from Step 1, not the transaction-scoped token returned in the account-create reply — that one only authorizes uploads for its own workflow execution.\n\nRetry policy, as implemented in src/lib/jumio/retrieval.ts: 404 / 429 / 5xx / network errors are retried at 1s, 3s, 8s, 10s. A 404 here means \"not visible yet\" far more often than \"does not exist\". A 400 or 403 is our own bad request and repeating it only spends rate limit.\n\ndecision.type is PASSED | WARNING | REJECTED | NOT_EXECUTED.\ndecision.risk.score is 0 (no risk) to 100; -1 means the workflow never executed.\n\nThe response also carries credentials[].parts[].href, pointing at the ID and selfie images. FreightID deliberately never fetches or stores those."
+      },
+      "response": []
+    }
+  ]
+}

@@ -230,7 +230,7 @@ Every outbound call goes through the queue. Nothing calls TAI inline.
 
 ## Step 7 — The operator acts
 
-- **UI:** `/shipments/[id]` — lifecycle controls and the alerts dialog
+- **UI:** `/tai/shipments/[id]` — lifecycle controls and the alerts dialog
 - **Server actions:** `lifecycle-actions.ts`, `alert-actions.ts`
 
 | Action | Function | Outbound operation |
@@ -407,7 +407,8 @@ src/lib/tai/
 
 src/app/api/webhooks/tai/   three thin route handlers
 src/app/api/jobs/outbound/  queue runner
-src/app/shipments/          list, detail, lifecycle controls, alerts dialog
+src/app/tai/shipments/      list, detail, lifecycle controls, alerts dialog
+src/app/tai/staff/          broker staff roster from TAI
 ```
 
 ---

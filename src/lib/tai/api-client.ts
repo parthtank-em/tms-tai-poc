@@ -1,3 +1,12 @@
+import {
+  ADDRESS_LIMITS,
+  TAI_PHONE_PATTERN,
+  type TaiShipmentType,
+  type TaiStaffPermission,
+  type TaiStaffSetting,
+  type TaiTariffSetting,
+} from "./staff-fields";
+
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 
@@ -28,6 +37,8 @@ const DEFAULT_BASE_URL = "https://www.taibeta.net";
 const SHIPPING_PREFIX = "/PublicApi/Shipping/v2";
 /** Alert *types* are org configuration, so they live under Broker, not Shipping. */
 const BROKER_PREFIX = "/PublicApi/Broker/v2";
+/** Staff are people in the org, and get a prefix of their own again. */
+const STAFF_PREFIX = "/PublicApi/Staff/v2";
 
 /** Paths exactly as the OpenAPI definitions declare them. */
 const PATHS = {
@@ -36,6 +47,10 @@ const PATHS = {
   brokerAlertTypes: `${BROKER_PREFIX}/Alerts`,
   tracking: `${SHIPPING_PREFIX}/Tracking`,
   shipmentReferenceNumbers: `${SHIPPING_PREFIX}/ShipmentReferenceNumbers`,
+  assignments: `${SHIPPING_PREFIX}/Assignments`,
+  brokerStaff: `${STAFF_PREFIX}/Brokers`,
+  /** ⚠️ Singular. Reading the roster is `/Brokers`; creating one is `/Broker`. */
+  createBrokerStaff: `${STAFF_PREFIX}/Broker`,
   // Use case 3's activity log is still inferred from the findings doc — no
   // OpenAPI definition for it yet.
   activityLogs: `${SHIPPING_PREFIX}/ShipmentActivityLogs`,
@@ -611,6 +626,239 @@ export async function deleteShipmentReferenceNumbers(
 export function asReferenceNumbers(data: unknown): PublicApiShipmentReferenceNumberV2[] {
   if (Array.isArray(data)) return data as PublicApiShipmentReferenceNumberV2[];
   return data && typeof data === "object" ? [data as PublicApiShipmentReferenceNumberV2] : [];
+}
+
+// --- Staff assignment ------------------------------------------------------
+
+/** `TMSFoundation.Models.PublicAPI.v2.Generic.PublicAPIAddress` */
+export type PublicApiAddress = {
+  streetAddress?: string;
+  streetAddressTwo?: string;
+  city?: string;
+  /** Two letters. */
+  state?: string;
+  zipCode?: string;
+  /** A closed enum of country names in the spec; free text is fine to read. */
+  country?: string;
+  contactName?: string;
+};
+
+/**
+ * `TMSFoundation.Models.PublicAPI.v2.Staff.PublicAPICreateBrokerStaffResponse`
+ *
+ * The spec's schema is large — notification flags, permissions, tariff
+ * settings, default shipment types. Only the fields that identify a person and
+ * the ones the staff table shows are typed here; the whole body is kept in
+ * `tai_api_calls.response_body` anyway.
+ */
+export type PublicApiBrokerStaff = {
+  /** int32 — the id `PublicAPIAssignmentsPostRequest.staffId` expects. */
+  staffId?: number;
+  contactName?: string;
+  login?: string;
+  email?: string;
+  title?: string;
+  enabled?: boolean;
+  /** int32 */
+  organizationId?: number;
+  referenceNumber?: string;
+  /** All three carry the spec's `^\+\d{10,}(x\d+)?$` shape — E.164, unformatted. */
+  phone?: string;
+  mobile?: string;
+  fax?: string;
+  address?: PublicApiAddress;
+
+  // The rest of the schema. The list view needs none of it; the detail page
+  // shows all of it, which is the difference between the two readings.
+  includeInARCollectionNotices?: boolean;
+  invoiceNotification?: boolean;
+  shipmentStatusChangeNotification?: boolean;
+  proofOfDeliveryNotification?: boolean;
+  shipmentPickedUpStatusChangeNotification?: boolean;
+  shipmentOutForDeliveryStatusChangeNotification?: boolean;
+  shipmentDeliveredStatusChangeNotification?: boolean;
+  defaultShipmentType?: TaiShipmentType[];
+  staffSettings?: TaiStaffSetting[];
+  tariffSettings?: TaiTariffSetting[];
+  permissions?: TaiStaffPermission[];
+};
+
+/**
+ * **Get Broker Staff** — `GET /PublicApi/Staff/v2/Brokers`
+ * "Find broker staff by organization id, contact name, email, login, or staff id."
+ * operationId `PublicAPIStaff_GetBrokerStaff`
+ *
+ * Responds 200 with an array of `PublicAPICreateBrokerStaffResponse`, or 400
+ * with a string.
+ *
+ * Every filter is optional and all are left unset by default, so the caller
+ * sees the org's whole roster rather than a silently narrowed one. `brokerId`
+ * is the refinement to reach for once we know which organization id this
+ * integration belongs to (§9) — nothing configures one today.
+ */
+export function getBrokerStaff(
+  filters: {
+    brokerId?: number;
+    contactName?: string;
+    email?: string;
+    login?: string;
+    staffId?: number;
+  },
+  context: CallContext,
+): Promise<TaiCallResult> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  }
+
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return call("GET", `${PATHS.brokerStaff}${suffix}`, undefined, context);
+}
+
+/**
+ * `TMSFoundation.Models.PublicAPI.v2.PublicAPIAssignmentsPostRequest`
+ *
+ * ⚠️ The spec marks **no** field required, yet an assignment without a shipment
+ * or a staff member is meaningless. `shipmentId` and `staffId` are required
+ * here, and validated below, rather than trusting TAI to reject a half-empty
+ * body. Each is an int32 in 1 … 2147483647.
+ */
+export type PublicApiAssignmentsPostRequest = {
+  shipmentId: number;
+  staffId: number;
+  /** Optional — ties the assignment to an activity log entry we do not have. */
+  activityLogId?: number;
+};
+
+/**
+ * **Create Staff Assignment** — `POST /PublicApi/Shipping/v2/Assignments`
+ * "Create a new staff assignment."
+ * operationId `PublicAPIShipping_AddAssignments`
+ *
+ * Responds 200 with a bare int32 — the new assignment's id, not an object.
+ */
+export async function createAssignment(
+  body: PublicApiAssignmentsPostRequest,
+  context: CallContext,
+): Promise<TaiCallResult> {
+  if (!isValidTaiShipmentId(body.shipmentId)) {
+    return {
+      ok: false,
+      status: null,
+      error: `Invalid TAI shipment reference (${String(body.shipmentId)}).`,
+      retryable: false,
+    };
+  }
+
+  // Same int32 range as a shipment id, so the same check earns its keep twice.
+  if (!isValidTaiShipmentId(body.staffId)) {
+    return {
+      ok: false,
+      status: null,
+      error: `staffId must be an int32 between 1 and ${INT32_MAX}; got ${String(body.staffId)}.`,
+      retryable: false,
+    };
+  }
+
+  if (body.activityLogId !== undefined && !isValidTaiShipmentId(body.activityLogId)) {
+    return {
+      ok: false,
+      status: null,
+      error: `activityLogId must be an int32 between 1 and ${INT32_MAX}.`,
+      retryable: false,
+    };
+  }
+
+  return call("POST", PATHS.assignments, body, context);
+}
+
+/** The spec declares an array response; tolerate a single object defensively. */
+export function asBrokerStaff(data: unknown): PublicApiBrokerStaff[] {
+  if (Array.isArray(data)) return data as PublicApiBrokerStaff[];
+  return data && typeof data === "object" ? [data as PublicApiBrokerStaff] : [];
+}
+
+// --- Creating broker staff -------------------------------------------------
+
+/**
+ * `TMSFoundation.Models.PublicAPI.v2.Staff.PublicAPICreateBrokerStaffRequest`
+ *
+ * ⚠️ `organizationId` is the **only** required field in the spec — not login,
+ * not password, not email. That is almost certainly laxer than TAI's real
+ * behaviour, so the domain layer requires more than this type does.
+ */
+export type PublicApiCreateBrokerStaffRequest = {
+  /** int32 — the one field the spec marks required. */
+  organizationId: number;
+  login?: string;
+  password?: string;
+  email?: string;
+  title?: string;
+  contactName?: string;
+  referenceNumber?: string;
+  enabled?: boolean;
+  address?: PublicApiAddress;
+  phone?: string;
+  mobile?: string;
+  fax?: string;
+  includeInARCollectionNotices?: boolean;
+  invoiceNotification?: boolean;
+  shipmentStatusChangeNotification?: boolean;
+  proofOfDeliveryNotification?: boolean;
+  shipmentPickedUpStatusChangeNotification?: boolean;
+  shipmentOutForDeliveryStatusChangeNotification?: boolean;
+  shipmentDeliveredStatusChangeNotification?: boolean;
+  defaultShipmentType?: TaiShipmentType[];
+  staffSettings?: TaiStaffSetting[];
+  tariffSettings?: TaiTariffSetting[];
+  permissions?: TaiStaffPermission[];
+};
+
+/**
+ * **Create Broker Staff** — `POST /PublicApi/Staff/v2/Broker`
+ * "Create a new broker staff by organization id."
+ * operationId `PublicAPIStaff_CreateStaff`
+ *
+ * Responds 200 with a `PublicAPICreateBrokerStaffResponse` — the created person,
+ * `staffId` included — or 400 with a bare string explaining the rejection.
+ */
+export async function createBrokerStaff(
+  body: PublicApiCreateBrokerStaffRequest,
+  context: CallContext,
+): Promise<TaiCallResult> {
+  if (
+    typeof body.organizationId !== "number" ||
+    !Number.isInteger(body.organizationId) ||
+    body.organizationId < 1 ||
+    body.organizationId > INT32_MAX
+  ) {
+    return {
+      ok: false,
+      status: null,
+      error: `organizationId must be an int32 between 1 and ${INT32_MAX}.`,
+      retryable: false,
+    };
+  }
+
+  for (const field of ["phone", "mobile", "fax"] as const) {
+    const value = body[field];
+    if (value !== undefined && !TAI_PHONE_PATTERN.test(value)) {
+      return {
+        ok: false,
+        status: null,
+        error: `${field} must look like +15551234567 or +15551234567x89.`,
+        retryable: false,
+      };
+    }
+  }
+
+  for (const [field, max] of Object.entries(ADDRESS_LIMITS)) {
+    const value = body.address?.[field as keyof typeof ADDRESS_LIMITS];
+    const invalid = tooLong(value, max, `address.${field}`);
+    if (invalid) return { ok: false, status: null, error: invalid, retryable: false };
+  }
+
+  return call("POST", PATHS.createBrokerStaff, body, context);
 }
 
 /**

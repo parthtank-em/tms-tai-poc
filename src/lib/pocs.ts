@@ -18,7 +18,7 @@ export const pocs: Poc[] = [
     title: "TMS-TAI Integration",
     shortTitle: "TMS-TAI",
     description: "Shipments synced from TAI, with stops, statuses and webhook history.",
-    href: "/shipments",
+    href: "/tai/shipments",
   },
   {
     title: "Jumio Integration",

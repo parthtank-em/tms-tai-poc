@@ -60,7 +60,7 @@ export async function createAlertAction(formData: FormData): Promise<AlertsState
   }
 
   kickWorker();
-  revalidatePath(`/shipments/${shipmentId}`);
+  revalidatePath(`/tai/shipments/${shipmentId}`);
 
   return { alerts, error: null, notice: `Alert "${alertType}" raised and queued for TAI.` };
 }
@@ -79,7 +79,7 @@ export async function resolveAlertAction(formData: FormData): Promise<AlertsStat
   }
 
   kickWorker();
-  revalidatePath(`/shipments/${shipmentId}`);
+  revalidatePath(`/tai/shipments/${shipmentId}`);
 
   return { alerts, error: null, notice: "Alert resolved and queued for TAI." };
 }

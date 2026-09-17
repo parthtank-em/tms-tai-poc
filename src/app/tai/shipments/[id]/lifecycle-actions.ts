@@ -45,7 +45,7 @@ async function run(
   if (!result.ok) return { error: result.error, notice: null };
 
   kickWorker();
-  revalidatePath(`/shipments/${shipmentId}`);
+  revalidatePath(`/tai/shipments/${shipmentId}`);
 
   return { error: null, notice };
 }

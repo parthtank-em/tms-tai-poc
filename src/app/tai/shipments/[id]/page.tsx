@@ -80,7 +80,7 @@ export default async function ShipmentDetailPage({
     <LifecycleFeedback>
       <main className="mx-auto w-full max-w-6xl px-6 py-10">
         <Link
-          href="/shipments"
+          href="/tai/shipments"
           className="text-sm text-muted-foreground underline-offset-4 hover:underline"
         >
           ← All shipments

@@ -1,5 +1,7 @@
 import { asBrokerStaff, getBrokerStaff, type PublicApiBrokerStaff } from "./api-client";
 
+import { formatLocation } from "@/lib/format";
+
 /**
  * Broker staff come from TAI, not from us.
  *
@@ -8,8 +10,15 @@ import { asBrokerStaff, getBrokerStaff, type PublicApiBrokerStaff } from "./api-
  * list for the same reason alert types have none: an id we invented would name
  * nobody, and the assignment would either fail or attach to the wrong person.
  *
- * This is the same shape as `alert-types.ts`, deliberately — both are org
- * configuration read from TAI to populate a dropdown.
+ * Two readings of the same endpoint live here:
+ *
+ * - `loadBrokerStaff` — the assignment dropdown. Assignable people only, cached,
+ *   shaped as options. Same as `alert-types.ts`: org configuration behind a
+ *   picker.
+ * - `listBrokerStaff` — the `/tai/staff` table. Everyone TAI returns, uncached,
+ *   with the contact fields the page shows. A roster page that hid disabled
+ *   accounts or served a five-minute-old copy would be answering a different
+ *   question than the one it appears to answer.
  */
 
 export type StaffOption = {
@@ -104,4 +113,103 @@ export async function loadBrokerStaff(options?: { force?: boolean }): Promise<St
 export function isKnownStaffId(staffId: number): boolean | null {
   if (!cache) return null;
   return cache.options.some((option) => option.id === staffId);
+}
+
+// --- The roster as a table -------------------------------------------------
+
+/**
+ * One person, as `/tai/staff` shows them. Every field but the id is nullable:
+ * the spec marks nothing required beyond what identifies the row, so a sparse
+ * record renders as gaps rather than as empty strings.
+ */
+export type StaffMember = {
+  staffId: number;
+  /** `contactName`, or the identifier they are otherwise known by. */
+  name: string;
+  title: string | null;
+  email: string | null;
+  login: string | null;
+  /** `phone`, falling back to `mobile` — the table has one column for reaching them. */
+  phone: string | null;
+  location: string | null;
+  organizationId: number | null;
+  /** `undefined` from TAI reads as unknown, not as disabled. */
+  enabled: boolean | null;
+};
+
+export type StaffDirectoryResult = { staff: StaffMember[]; error: string | null };
+
+/** Trims, and turns blank into `null` so the table's own dash rendering applies. */
+function text(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * `formatLocation` renders its own dash for an empty address; here an empty one
+ * has to read as `null` so every gap in the row is spelled the same way.
+ */
+function toLocation(address: PublicApiBrokerStaff["address"]): string | null {
+  if (!address) return null;
+
+  const location = formatLocation({
+    city: text(address.city),
+    state: text(address.state),
+    postalCode: text(address.zipCode),
+  });
+
+  return location === "—" ? null : location;
+}
+
+function toMember(staff: PublicApiBrokerStaff): StaffMember {
+  const name = toLabel(staff);
+
+  return {
+    staffId: staff.staffId as number,
+    name,
+    // A title that merely repeats the name says nothing twice.
+    title: text(staff.title) === name ? null : text(staff.title),
+    email: text(staff.email),
+    login: text(staff.login),
+    phone: text(staff.phone) ?? text(staff.mobile),
+    location: toLocation(staff.address),
+    organizationId: typeof staff.organizationId === "number" ? staff.organizationId : null,
+    enabled: typeof staff.enabled === "boolean" ? staff.enabled : null,
+  };
+}
+
+/**
+ * The whole roster, read straight from TAI on every request.
+ *
+ * Unlike `loadBrokerStaff` this keeps people whose account is disabled: the
+ * page is a directory, and an account that exists but cannot sign in is
+ * something the table says rather than something it hides. Rows without a
+ * `staffId` still go — that id is how a person is addressed everywhere else, so
+ * a row lacking one names nobody the operator could act on.
+ */
+export async function listBrokerStaff(): Promise<StaffDirectoryResult> {
+  const result = await getBrokerStaff({}, { attempt: 1 });
+
+  if (!result.ok) {
+    // The raw TAI error stays in `tai_api_calls`; the page gets the outcome.
+    return { staff: [], error: "Could not load staff from TAI." };
+  }
+
+  const seen = new Set<number>();
+
+  const staff = asBrokerStaff(result.data)
+    .filter((entry) => {
+      if (typeof entry.staffId !== "number" || !Number.isInteger(entry.staffId)) return false;
+      if (entry.staffId < 1) return false;
+      // TAI has been seen returning a row more than once (see the note in
+      // `reference-numbers.ts`); the id is unique, so the first wins.
+      if (seen.has(entry.staffId)) return false;
+
+      seen.add(entry.staffId);
+      return true;
+    })
+    .map(toMember)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return { staff, error: null };
 }

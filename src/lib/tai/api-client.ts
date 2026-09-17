@@ -619,12 +619,26 @@ export function asReferenceNumbers(data: unknown): PublicApiShipmentReferenceNum
 
 // --- Staff assignment ------------------------------------------------------
 
+/** `TMSFoundation.Models.PublicAPI.v2.Generic.PublicAPIAddress` */
+export type PublicApiAddress = {
+  streetAddress?: string;
+  streetAddressTwo?: string;
+  city?: string;
+  /** Two letters. */
+  state?: string;
+  zipCode?: string;
+  /** A closed enum of country names in the spec; free text is fine to read. */
+  country?: string;
+  contactName?: string;
+};
+
 /**
  * `TMSFoundation.Models.PublicAPI.v2.Staff.PublicAPICreateBrokerStaffResponse`
  *
  * The spec's schema is large — notification flags, permissions, tariff
- * settings, a full address. Only the fields needed to identify a person are
- * typed here; the whole body is kept in `tai_api_calls.response_body` anyway.
+ * settings, default shipment types. Only the fields that identify a person and
+ * the ones the staff table shows are typed here; the whole body is kept in
+ * `tai_api_calls.response_body` anyway.
  */
 export type PublicApiBrokerStaff = {
   /** int32 — the id `PublicAPIAssignmentsPostRequest.staffId` expects. */
@@ -636,6 +650,12 @@ export type PublicApiBrokerStaff = {
   enabled?: boolean;
   /** int32 */
   organizationId?: number;
+  referenceNumber?: string;
+  /** All three carry the spec's `^\+\d{10,}(x\d+)?$` shape — E.164, unformatted. */
+  phone?: string;
+  mobile?: string;
+  fax?: string;
+  address?: PublicApiAddress;
 };
 
 /**

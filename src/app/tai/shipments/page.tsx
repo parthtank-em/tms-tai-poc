@@ -104,7 +104,10 @@ export default async function ShipmentsPage() {
   if (shipments.length === 0) {
     return (
       <main className="mx-auto w-full max-w-7xl px-6 py-10">
-        <h1 className="mb-6 text-2xl font-semibold tracking-tight">Shipments</h1>
+        <header className="mb-6">
+          <h1 className="text-2xl font-semibold tracking-tight">Shipments</h1>
+        </header>
+
         <Card>
           <CardHeader>
             <CardTitle>No shipments yet</CardTitle>
@@ -121,6 +124,7 @@ export default async function ShipmentsPage() {
     <main className="mx-auto w-full max-w-7xl px-6 py-10">
       <header className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Shipments</h1>
+
         <p className="text-sm text-muted-foreground">
           {shipments.length} {shipments.length === 1 ? "shipment" : "shipments"}
         </p>
@@ -146,7 +150,7 @@ export default async function ShipmentsPage() {
             <TableBody>
               {shipments.map((shipment) => {
                 const { ship, delivery } = shipmentDates(shipment.stops);
-                const href = `/shipments/${shipment.id}`;
+                const href = `/tai/shipments/${shipment.id}`;
 
                 return (
                   <TableRow key={shipment.id}>

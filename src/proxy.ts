@@ -7,7 +7,7 @@ import { readSessionToken, sessionCookie } from "@/lib/auth/session";
  *
  * This only reads the signed cookie — no database work, because proxy runs on
  * every matched request including prefetches. It is a redirect convenience, not
- * the security boundary: `src/app/shipments/layout.tsx` re-checks the session
+ * the security boundary: `src/app/tai/layout.tsx` re-checks the session
  * next to the queries it protects.
  */
 export function proxy(request: NextRequest) {
@@ -27,7 +27,7 @@ export const config = {
   // "/" is the POC index, so it is signed-in surface like the rest.
   matcher: [
     "/",
-    "/shipments/:path*",
+    "/tai/:path*",
     "/jumio-dashboard/:path*",
     "/fmcsa/:path*",
     "/platelookup/:path*",

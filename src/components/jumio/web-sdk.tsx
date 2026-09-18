@@ -8,18 +8,6 @@ import "./web-sdk-theme.css";
 import type { JumioSdkDatacenter } from "@/lib/jumio/acquisition";
 
 /**
- * Overrides the start screen's heading, which the SDK otherwise renders as
- * "Start Verification". Bare text, so it replaces the SDK's `<h1>` outright
- * rather than restyling it.
- *
- * Because this is literal content rather than a translation key, it stays
- * English at every `locale` — the localized route is a `#jumio-translation`
- * override of `instruction.start_verification`.
- */
-const START_TITLE_TEMPLATE_ID = "jumio-start-title";
-const START_TITLE_TEXT = "FreightId Driver Verification";
-
-/**
  * Jumio's Web SDK, embedded in the page (§10).
  *
  * `<jumio-sdk>` is a custom element; importing the package registers it. The
@@ -51,23 +39,12 @@ export function JumioWebSdk({
 
     let element: HTMLElement | undefined;
 
-    // The SDK finds this with `document.querySelector` and clones its
-    // `.content`, so it has to be a parsed <template> that is already in the
-    // document when the start screen renders. `innerHTML` is what fills
-    // `.content` — `textContent` would set the template's own child nodes, and
-    // JSX children would do the same, leaving the SDK nothing to read.
-    const titleTemplate = document.createElement("template");
-    titleTemplate.id = START_TITLE_TEMPLATE_ID;
-    titleTemplate.innerHTML = START_TITLE_TEXT;
-    container.append(titleTemplate);
-
     import("@jumio/websdk").then(
       () => {
         element = document.createElement("jumio-sdk");
         element.setAttribute("dc", datacenter);
         element.setAttribute("token", token);
         element.setAttribute("locale", locale);
-        element.setAttribute("show-language-selector", 'false');
         element.style.cssText = "display:block;height:100%";
         // These events bubble and are composed, so one listener here catches
         // them wherever in the SDK's shadow tree they originate.
@@ -83,12 +60,8 @@ export function JumioWebSdk({
     );
 
     // Removing the element runs the SDK's `disconnectedCallback`, which is what
-    // stops the camera. The template goes with it so a re-run does not leave a
-    // second `#jumio-start-title` behind for the query to pick up.
-    return () => {
-      element?.remove();
-      titleTemplate.remove();
-    };
+    // stops the camera.
+    return () => element?.remove();
   }, [token, datacenter, locale, onDone]);
 
   return (

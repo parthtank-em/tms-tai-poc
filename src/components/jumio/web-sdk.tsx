@@ -17,12 +17,12 @@ import type { JumioSdkDatacenter } from "@/lib/jumio/acquisition";
  */
 const TRANSLATIONS: Record<string, Record<string, string>> = {
   en: {
-    "instruction.start_verification": "Freight - Let's verify your identity",
+    "instruction.start_verification": "Freight Driver Verification",
     "cta.continue": "Next",
     "cta.back": "Previous",
   },
   es: {
-    "instruction.start_verification": "Freight - Verifiquemos tu identidad",
+    "instruction.start_verification": "Verificación de conductores de Freight",
     "cta.continue": "Siguiente",
     "cta.back": "Anterior",
   },
@@ -76,6 +76,11 @@ export function JumioWebSdk({
         element.setAttribute("dc", datacenter);
         element.setAttribute("token", token);
         element.setAttribute("locale", locale);
+        // These two take the literal strings "true"/"false" — the SDK's
+        // converter ignores any other value, including a bare attribute, and
+        // then falls back to the merchant setting, which shows both by default.
+        element.setAttribute("show-back-button", "false");
+        element.setAttribute("show-language-selector", "false");
         element.style.cssText = "display:block;height:100%";
         // These events bubble and are composed, so one listener here catches
         // them wherever in the SDK's shadow tree they originate.

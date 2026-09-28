@@ -742,3 +742,57 @@ model DocumentCheck {
   @@index([jumioWorkflowId])
   @@map("document_checks")
 }
+
+// ---------------------------------------------------------------------------
+// Geo location tracking
+//
+// docs/geo-location-tracking-poc-implementation.md. Standalone on purpose: a
+// session belongs to a device, not to a shipment or driver — linking the two is
+// out of scope until the location pipeline itself is proven.
+// ---------------------------------------------------------------------------
+
+enum TrackingSessionStatus {
+  ACTIVE
+  COMPLETED
+}
+
+/// One record for every time the driver presses Start. Pressing Start again
+/// opens a new session rather than resuming the last one.
+model TrackingSession {
+  id        String                @id @default(uuid())
+  deviceId  String                @map("device_id")
+  startedAt DateTime              @default(now()) @map("started_at")
+  endedAt   DateTime?             @map("ended_at")
+  status    TrackingSessionStatus @default(ACTIVE)
+  createdAt DateTime              @default(now()) @map("created_at")
+  updatedAt DateTime              @updatedAt @map("updated_at")
+
+  locations TrackingLocation[]
+
+  @@index([deviceId, startedAt])
+  @@index([status])
+  @@map("tracking_sessions")
+}
+
+/// Every position the device reported.
+///
+/// The id is generated **on the device**, not here. That is what makes an
+/// offline batch safe to retry: a resend collides on the primary key and is
+/// skipped instead of stored twice.
+model TrackingLocation {
+  id         String          @id
+  sessionId  String          @map("session_id")
+  session    TrackingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  latitude   Decimal         @db.Decimal(10, 7)
+  longitude  Decimal         @db.Decimal(10, 7)
+  /// When the GPS fix was taken on the device. The route is ordered by this.
+  capturedAt DateTime        @map("captured_at")
+  /// When the server stored it. For an offline upload this can be much later
+  /// than `capturedAt` — the live map polls on this, not on `capturedAt`, so a
+  /// late batch of old points is still picked up.
+  receivedAt DateTime        @default(now()) @map("received_at")
+
+  @@index([sessionId, capturedAt])
+  @@index([sessionId, receivedAt])
+  @@map("tracking_locations")
+}

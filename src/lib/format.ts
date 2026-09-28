@@ -28,6 +28,22 @@ export function formatDateTime(value: Date | null | undefined): string {
   return value ? `${DATE_TIME.format(value)} UTC` : "—";
 }
 
+const DATE_TIME_SECONDS = new Intl.DateTimeFormat("en-US", {
+  timeZone: "UTC",
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
+/** For values that change within a minute, such as GPS fixes. */
+export function formatDateTimeSeconds(value: Date | null | undefined): string {
+  return value ? `${DATE_TIME_SECONDS.format(value)} UTC` : "—";
+}
+
 export function formatDate(value: Date | null | undefined): string {
   return value ? DATE_ONLY.format(value) : "—";
 }

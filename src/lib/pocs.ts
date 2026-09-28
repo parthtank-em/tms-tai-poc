@@ -38,4 +38,10 @@ export const pocs: Poc[] = [
     description: "Look up a vehicle's history by VIN, or by state and plate.",
     href: "/platelookup",
   },
+  {
+    title: "Geo Location Tracking",
+    shortTitle: "Tracking",
+    description: "Tracking sessions from the mobile app, with live and historical routes on a map.",
+    href: "/tracking",
+  },
 ];

@@ -31,5 +31,6 @@ export const config = {
     "/jumio-dashboard/:path*",
     "/fmcsa/:path*",
     "/platelookup/:path*",
+    "/tracking/:path*",
   ],
 };

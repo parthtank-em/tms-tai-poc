@@ -23,6 +23,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDateTimeSeconds, formatNumber } from "@/lib/format";
 import { arrivedLate, mergeGeofenceEvents, mergeLocations } from "@/lib/tracking/merge";
 import type {
@@ -47,7 +48,7 @@ const MAP_ID = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID";
 /** Beyond this, per-point dots cost more in DOM than they add in clarity. */
 const MAX_POINT_MARKERS = 300;
 
-/** How many rows the point table under the map shows. */
+/** How many rows each table under the map shows. */
 const TABLE_ROWS = 25;
 
 const toLatLng = (point: { latitude: number; longitude: number }) => ({
@@ -204,8 +205,32 @@ export function SessionMap({
         </CardContent>
       </Card>
 
-      {geofence && <GeofenceEventTable events={geofenceEvents} />}
-      <PointTable locations={locations} />
+      <div className="lg:col-span-2">
+        {geofence ? (
+          <Tabs defaultValue="points">
+            <TabsList>
+              <TabsTrigger value="points">
+                Location points ({formatNumber(locations.length)})
+              </TabsTrigger>
+              <TabsTrigger value="geofence-events">
+                Geofence events ({formatNumber(geofenceEvents.length)})
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="points" className="mt-2">
+              <PointTable locations={locations} />
+            </TabsContent>
+            <TabsContent value="geofence-events" className="mt-2">
+              <GeofenceEventTable events={geofenceEvents} />
+            </TabsContent>
+          </Tabs>
+        ) : (
+          // No fence, no events — a single tab would only add a click.
+          <>
+            <h2 className="mb-3 text-sm font-medium">Latest points</h2>
+            <PointTable locations={locations} />
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -369,16 +394,8 @@ function GeofenceEventTable({ events }: { events: GeofenceEventView[] }) {
   const rows = events.slice(-TABLE_ROWS).reverse();
 
   return (
-    <div className="lg:col-span-2">
-      <h2 className="mb-3 text-sm font-medium">
-        Geofence events
-        {events.length > TABLE_ROWS && (
-          <span className="font-normal text-muted-foreground">
-            {" "}
-            · showing {TABLE_ROWS} of {formatNumber(events.length)}
-          </span>
-        )}
-      </h2>
+    <>
+      <Truncated shown={rows.length} total={events.length} noun="events" />
 
       {rows.length === 0 ? (
         <p className="rounded-xl border p-6 text-sm text-muted-foreground">
@@ -414,7 +431,7 @@ function GeofenceEventTable({ events }: { events: GeofenceEventView[] }) {
           </Table>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -423,16 +440,8 @@ function PointTable({ locations }: { locations: LocationView[] }) {
   const rows = locations.slice(-TABLE_ROWS).reverse();
 
   return (
-    <div className="lg:col-span-2">
-      <h2 className="mb-3 text-sm font-medium">
-        Latest points
-        {locations.length > TABLE_ROWS && (
-          <span className="font-normal text-muted-foreground">
-            {" "}
-            · showing {TABLE_ROWS} of {formatNumber(locations.length)}
-          </span>
-        )}
-      </h2>
+    <>
+      <Truncated shown={rows.length} total={locations.length} noun="points" />
 
       {rows.length === 0 ? (
         <p className="rounded-xl border p-6 text-sm text-muted-foreground">
@@ -470,6 +479,17 @@ function PointTable({ locations }: { locations: LocationView[] }) {
           </Table>
         </div>
       )}
-    </div>
+    </>
+  );
+}
+
+/** Only rendered when the table is cut short. */
+function Truncated({ shown, total, noun }: { shown: number; total: number; noun: string }) {
+  if (total <= shown) return null;
+
+  return (
+    <p className="mb-2 text-xs text-muted-foreground">
+      Showing the latest {shown} of {formatNumber(total)} {noun}.
+    </p>
   );
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { arrivedLate, mergeLocations } from "./merge";
-import type { LocationView } from "./types";
+import { arrivedLate, mergeGeofenceEvents, mergeLocations } from "./merge";
+import type { GeofenceEventView, LocationView } from "./types";
 
 const at = (id: string, capturedAt: string, receivedAt = capturedAt): LocationView => ({
   id,
@@ -27,6 +27,29 @@ describe("mergeLocations", () => {
     ]);
 
     expect(merged.map((location) => location.id)).toEqual(["a", "b", "c", "d"]);
+  });
+});
+
+const crossing = (id: string, capturedAt: string, isOffline = false): GeofenceEventView => ({
+  id,
+  type: "EXIT",
+  capturedAt,
+  receivedAt: "2026-09-30T10:10:00.000Z",
+  isOffline,
+});
+
+describe("mergeGeofenceEvents", () => {
+  it("drops ids already shown", () => {
+    const current = [crossing("a", "2026-09-30T09:00:00.000Z")];
+
+    expect(mergeGeofenceEvents(current, [crossing("a", "2026-09-30T09:00:00.000Z")])).toBe(current);
+  });
+
+  it("slots a late offline event into capture order", () => {
+    const current = [crossing("a", "2026-09-30T09:00:00.000Z"), crossing("c", "2026-09-30T10:05:00.000Z")];
+    const merged = mergeGeofenceEvents(current, [crossing("b", "2026-09-30T09:50:00.000Z", true)]);
+
+    expect(merged.map((event) => event.id)).toEqual(["a", "b", "c"]);
   });
 });
 

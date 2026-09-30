@@ -3,6 +3,7 @@
 import {
   AdvancedMarker,
   APIProvider,
+  Circle,
   Map,
   Pin,
   Polyline,
@@ -12,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { TrackingStatusBadge } from "@/components/tracking/tracking-status-badge";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -22,8 +24,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDateTimeSeconds, formatNumber } from "@/lib/format";
-import { arrivedLate, mergeLocations } from "@/lib/tracking/merge";
-import type { LocationView, LocationsResponse } from "@/lib/tracking/types";
+import { arrivedLate, mergeGeofenceEvents, mergeLocations } from "@/lib/tracking/merge";
+import type {
+  Geofence,
+  GeofenceEventView,
+  LocationView,
+  LocationsResponse,
+} from "@/lib/tracking/types";
 
 /**
  * Web-map refresh rate (plan §10). Independent of how often the device sends —
@@ -43,11 +50,21 @@ const MAX_POINT_MARKERS = 300;
 /** How many rows the point table under the map shows. */
 const TABLE_ROWS = 25;
 
-const toLatLng = (location: LocationView) => ({ lat: location.latitude, lng: location.longitude });
+const toLatLng = (point: { latitude: number; longitude: number }) => ({
+  lat: point.latitude,
+  lng: point.longitude,
+});
 
-export function SessionMap({ initial }: { initial: LocationsResponse }) {
+export function SessionMap({
+  initial,
+  geofence,
+}: {
+  initial: LocationsResponse;
+  geofence: Geofence | null;
+}) {
   const router = useRouter();
   const [locations, setLocations] = useState(initial.locations);
+  const [geofenceEvents, setGeofenceEvents] = useState(initial.geofenceEvents);
   const [status, setStatus] = useState(initial.status);
   const [lastPolledAt, setLastPolledAt] = useState<Date | null>(null);
   const [pollFailed, setPollFailed] = useState(false);
@@ -78,6 +95,7 @@ export function SessionMap({ initial }: { initial: LocationsResponse }) {
 
         cursor.current = payload.cursor ?? cursor.current;
         setLocations((current) => mergeLocations(current, payload.locations));
+        setGeofenceEvents((current) => mergeGeofenceEvents(current, payload.geofenceEvents));
         setLastPolledAt(new Date());
         setPollFailed(false);
 
@@ -107,6 +125,7 @@ export function SessionMap({ initial }: { initial: LocationsResponse }) {
   const first = locations.at(0);
   const last = locations.at(-1);
   const lateCount = locations.filter(arrivedLate).length;
+  const center = first ?? geofence;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_18rem]">
@@ -115,13 +134,18 @@ export function SessionMap({ initial }: { initial: LocationsResponse }) {
           <APIProvider apiKey={API_KEY}>
             <Map
               mapId={MAP_ID}
-              defaultCenter={first ? toLatLng(first) : { lat: 20, lng: 0 }}
-              defaultZoom={first ? 14 : 2}
+              defaultCenter={center ? toLatLng(center) : { lat: 20, lng: 0 }}
+              defaultZoom={center ? 14 : 2}
               gestureHandling="greedy"
               className="size-full"
             >
+              {geofence && <GeofenceCircle geofence={geofence} />}
               <Route locations={locations} active={status === "ACTIVE"} />
-              <Viewport locations={locations} follow={follow && status === "ACTIVE"} />
+              <Viewport
+                locations={locations}
+                geofence={geofence}
+                follow={follow && status === "ACTIVE"}
+              />
             </Map>
           </APIProvider>
         ) : (
@@ -147,6 +171,16 @@ export function SessionMap({ initial }: { initial: LocationsResponse }) {
               {formatDateTimeSeconds(last ? new Date(last.capturedAt) : null)}
             </Stat>
 
+            {geofence && (
+              <Stat label="Geofence">
+                <GeofenceStatus events={geofenceEvents} />
+                <span className="block text-xs text-muted-foreground">
+                  {formatNumber(geofence.radiusMeters)} m radius ·{" "}
+                  {formatNumber(geofenceEvents.length)} event(s)
+                </span>
+              </Stat>
+            )}
+
             {status === "ACTIVE" && (
               <>
                 <Stat label="Last refreshed">
@@ -170,6 +204,7 @@ export function SessionMap({ initial }: { initial: LocationsResponse }) {
         </CardContent>
       </Card>
 
+      {geofence && <GeofenceEventTable events={geofenceEvents} />}
       <PointTable locations={locations} />
     </div>
   );
@@ -181,6 +216,39 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="mt-0.5">{children}</dd>
     </div>
+  );
+}
+
+/** The fence the session was created with. Only drawn — never tested against. */
+function GeofenceCircle({ geofence }: { geofence: Geofence }) {
+  return (
+    <Circle
+      center={toLatLng(geofence)}
+      radius={geofence.radiusMeters}
+      strokeColor="#7c3aed"
+      strokeOpacity={0.9}
+      strokeWeight={2}
+      fillColor="#7c3aed"
+      fillOpacity={0.12}
+      clickable={false}
+    />
+  );
+}
+
+/**
+ * The device's latest report, by capture time. Unknown until the first event:
+ * the device only reports crossings, so a session that starts inside the fence
+ * and never leaves has nothing to show.
+ */
+function GeofenceStatus({ events }: { events: GeofenceEventView[] }) {
+  const latest = events.at(-1);
+
+  if (!latest) return <span className="text-muted-foreground">No events yet</span>;
+
+  return latest.type === "ENTER" ? (
+    <span className="font-medium text-emerald-600">Inside</span>
+  ) : (
+    <span className="font-medium text-amber-600">Outside</span>
   );
 }
 
@@ -231,22 +299,30 @@ function Route({ locations, active }: { locations: LocationView[]; active: boole
 }
 
 /**
- * Frames the route once when the first points are known, then — only while
- * following — pans to each new current position. It never re-fits after that,
- * so zooming or panning by hand is not undone on the next poll.
+ * Frames the route and the geofence once when either is known, then — only
+ * while following — pans to each new current position. It never re-fits after
+ * that, so zooming or panning by hand is not undone on the next poll.
  */
-function Viewport({ locations, follow }: { locations: LocationView[]; follow: boolean }) {
+function Viewport({
+  locations,
+  geofence,
+  follow,
+}: {
+  locations: LocationView[];
+  geofence: Geofence | null;
+  follow: boolean;
+}) {
   const map = useMap();
   const framed = useRef(false);
   const lastId = locations.at(-1)?.id;
 
   useEffect(() => {
-    if (!map || locations.length === 0) return;
+    if (!map || (locations.length === 0 && !geofence)) return;
 
     if (!framed.current) {
       framed.current = true;
 
-      if (locations.length === 1) {
+      if (locations.length === 1 && !geofence) {
         map.setCenter(toLatLng(locations[0]));
         map.setZoom(15);
         return;
@@ -254,6 +330,14 @@ function Viewport({ locations, follow }: { locations: LocationView[]; follow: bo
 
       const bounds = new google.maps.LatLngBounds();
       locations.forEach((location) => bounds.extend(toLatLng(location)));
+      if (geofence) {
+        // Never attached to the map — only used for its bounds.
+        const circleBounds = new google.maps.Circle({
+          center: toLatLng(geofence),
+          radius: geofence.radiusMeters,
+        }).getBounds();
+        if (circleBounds) bounds.union(circleBounds);
+      }
       map.fitBounds(bounds, 48);
       return;
     }
@@ -276,6 +360,60 @@ function MissingKey() {
         <code className="font-mono">.env</code> and restart the dev server. The points are still
         listed below.
       </p>
+    </div>
+  );
+}
+
+/** Newest capture first, like the point table. "Offline" is the device's own flag. */
+function GeofenceEventTable({ events }: { events: GeofenceEventView[] }) {
+  const rows = events.slice(-TABLE_ROWS).reverse();
+
+  return (
+    <div className="lg:col-span-2">
+      <h2 className="mb-3 text-sm font-medium">
+        Geofence events
+        {events.length > TABLE_ROWS && (
+          <span className="font-normal text-muted-foreground">
+            {" "}
+            · showing {TABLE_ROWS} of {formatNumber(events.length)}
+          </span>
+        )}
+      </h2>
+
+      {rows.length === 0 ? (
+        <p className="rounded-xl border p-6 text-sm text-muted-foreground">
+          The device has not reported entering or leaving the geofence yet.
+        </p>
+      ) : (
+        <div className="rounded-xl border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Event</TableHead>
+                <TableHead>Captured</TableHead>
+                <TableHead>Received</TableHead>
+                <TableHead>Delivery</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((event) => (
+                <TableRow key={event.id}>
+                  <TableCell>
+                    <Badge variant={event.type === "ENTER" ? "secondary" : "outline"}>
+                      {event.type === "ENTER" ? "Entered" : "Exited"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>{formatDateTimeSeconds(new Date(event.capturedAt))}</TableCell>
+                  <TableCell>{formatDateTimeSeconds(new Date(event.receivedAt))}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {event.isOffline ? "Offline upload" : "Live"}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import type { LocationInput } from "./types";
+import type { Geofence, GeofenceEventInput, LocationInput } from "./types";
 
 /**
  * Request-body parsing for the mobile endpoints.
@@ -20,6 +20,18 @@ const MAX_DEVICE_ID_LENGTH = 200;
  */
 export const MAX_BULK_LOCATIONS = 1_000;
 
+/** Per request. A day offline produces a handful of crossings, not thousands. */
+export const MAX_BULK_GEOFENCE_EVENTS = 1_000;
+
+/**
+ * Below ~50 m ordinary GPS drift puts a parked device in and out of the fence;
+ * the upper bound only refuses obvious unit mistakes (km sent as m).
+ */
+export const MIN_GEOFENCE_RADIUS_METERS = 50;
+export const MAX_GEOFENCE_RADIUS_METERS = 100_000;
+
+const GEOFENCE_EVENT_TYPES = ["ENTER", "EXIT"] as const;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -36,12 +48,55 @@ function coordinate(value: unknown, limit: number): number | null {
     : null;
 }
 
-export function parseStartSession(body: unknown): Parsed<{ deviceId: string }> {
+// Deliberately no "not in the future" check: a device with a skewed clock
+// still produced a real fix or crossing, and rejecting it would lose it.
+function timestamp(value: unknown): Date | null {
+  const date = typeof value === "string" ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+export type StartSessionInput = { deviceId: string; geofence: Geofence | null };
+
+export function parseStartSession(body: unknown): Parsed<StartSessionInput> {
   const deviceId = isRecord(body) ? nonEmptyString(body.deviceId, MAX_DEVICE_ID_LENGTH) : null;
 
-  return deviceId
-    ? { ok: true, value: { deviceId } }
-    : { ok: false, error: `deviceId is required (a string of at most ${MAX_DEVICE_ID_LENGTH} characters).` };
+  if (!deviceId) {
+    return { ok: false, error: `deviceId is required (a string of at most ${MAX_DEVICE_ID_LENGTH} characters).` };
+  }
+
+  const geofence = parseGeofence((body as Record<string, unknown>).geofence);
+  if (!geofence.ok) return geofence;
+
+  return { ok: true, value: { deviceId, geofence: geofence.value } };
+}
+
+/** Optional: absent or null means the session has no geofence. */
+function parseGeofence(value: unknown): Parsed<Geofence | null> {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (!isRecord(value)) return { ok: false, error: "geofence must be an object." };
+
+  const latitude = coordinate(value.latitude, 90);
+  if (latitude === null) return { ok: false, error: "geofence.latitude must be a number between -90 and 90." };
+
+  const longitude = coordinate(value.longitude, 180);
+  if (longitude === null) {
+    return { ok: false, error: "geofence.longitude must be a number between -180 and 180." };
+  }
+
+  const radiusMeters = value.radiusMeters;
+  if (
+    typeof radiusMeters !== "number" ||
+    !Number.isInteger(radiusMeters) ||
+    radiusMeters < MIN_GEOFENCE_RADIUS_METERS ||
+    radiusMeters > MAX_GEOFENCE_RADIUS_METERS
+  ) {
+    return {
+      ok: false,
+      error: `geofence.radiusMeters must be a whole number between ${MIN_GEOFENCE_RADIUS_METERS} and ${MAX_GEOFENCE_RADIUS_METERS}.`,
+    };
+  }
+
+  return { ok: true, value: { latitude, longitude, radiusMeters } };
 }
 
 export function parseLocation(body: unknown, label = "location"): Parsed<LocationInput> {
@@ -63,14 +118,65 @@ export function parseLocation(body: unknown, label = "location"): Parsed<Locatio
     return { ok: false, error: `${label}.longitude must be a number between -180 and 180.` };
   }
 
-  // Deliberately no "not in the future" check: a device with a skewed clock
-  // still produced a real fix, and rejecting it would lose the point outright.
-  const capturedAt = typeof body.capturedAt === "string" ? new Date(body.capturedAt) : null;
-  if (!capturedAt || Number.isNaN(capturedAt.getTime())) {
-    return { ok: false, error: `${label}.capturedAt must be an ISO 8601 timestamp.` };
-  }
+  const capturedAt = timestamp(body.capturedAt);
+  if (!capturedAt) return { ok: false, error: `${label}.capturedAt must be an ISO 8601 timestamp.` };
 
   return { ok: true, value: { id, latitude, longitude, capturedAt } };
+}
+
+function parseGeofenceEvent(body: unknown, label: string): Parsed<GeofenceEventInput> {
+  if (!isRecord(body)) return { ok: false, error: `${label} must be an object.` };
+
+  const id = nonEmptyString(body.id, MAX_ID_LENGTH);
+  if (!id) {
+    return {
+      ok: false,
+      error: `${label}.id is required — a device-generated id (UUID) of at most ${MAX_ID_LENGTH} characters.`,
+    };
+  }
+
+  const type = GEOFENCE_EVENT_TYPES.find((candidate) => candidate === body.type);
+  if (!type) return { ok: false, error: `${label}.type must be "ENTER" or "EXIT".` };
+
+  const capturedAt = timestamp(body.capturedAt);
+  if (!capturedAt) return { ok: false, error: `${label}.capturedAt must be an ISO 8601 timestamp.` };
+
+  // Required rather than defaulted: a client that forgets it should hear so,
+  // not have its offline events silently recorded as live.
+  if (typeof body.isOffline !== "boolean") {
+    return { ok: false, error: `${label}.isOffline must be true or false.` };
+  }
+
+  return { ok: true, value: { id, type, capturedAt, isOffline: body.isOffline } };
+}
+
+/**
+ * One endpoint for live and offline sends alike — a live crossing is a batch
+ * of one. All-or-nothing for the same reason as `parseBulkLocations`.
+ */
+export function parseGeofenceEvents(body: unknown): Parsed<GeofenceEventInput[]> {
+  const items = isRecord(body) ? body.events : undefined;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return { ok: false, error: "events must be a non-empty array." };
+  }
+
+  if (items.length > MAX_BULK_GEOFENCE_EVENTS) {
+    return {
+      ok: false,
+      error: `At most ${MAX_BULK_GEOFENCE_EVENTS} events per request — split the queue into batches.`,
+    };
+  }
+
+  const events: GeofenceEventInput[] = [];
+
+  for (const [index, item] of items.entries()) {
+    const parsed = parseGeofenceEvent(item, `events[${index}]`);
+    if (!parsed.ok) return parsed;
+    events.push(parsed.value);
+  }
+
+  return { ok: true, value: events };
 }
 
 export function parseBulkLocations(body: unknown): Parsed<LocationInput[]> {

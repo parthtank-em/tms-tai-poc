@@ -1,6 +1,6 @@
 # Geo Location Tracking — Mobile API Reference
 
-For developers building the mobile app. It covers the four endpoints a device calls: start a session, send a location, upload an offline batch, and stop.
+For developers building the mobile app. It covers the five endpoints a device calls: start a session (optionally with a geofence), send a location, upload an offline batch, report geofence events, and stop.
 
 Design background is in [geo-location-tracking-poc-implementation.md](./geo-location-tracking-poc-implementation.md).
 
@@ -11,11 +11,14 @@ Design background is in [geo-location-tracking-poc-implementation.md](./geo-loca
 A **session** is one tracking run. Every tap on **Start** creates a new session, and all locations until **Stop** belong to it.
 
 ```text
-Start ──► POST /api/tracking/sessions                      → sessionId
+Start ──► POST /api/tracking/sessions                      → sessionId (+ geofence, if given)
   │
   ├─ online:  POST /api/tracking/sessions/{sessionId}/locations       (one point, ~every 2 min)
   ├─ offline: keep points in a local queue
   ├─ back online: POST /api/tracking/sessions/{sessionId}/locations/bulk  (the queue)
+  │
+  ├─ geofence crossed: POST /api/tracking/sessions/{sessionId}/geofence-events
+  │                    (live or queued — same endpoint, isOffline says which)
   │
 Stop ──► POST /api/tracking/sessions/{sessionId}/stop
 ```
@@ -25,7 +28,8 @@ Stop ──► POST /api/tracking/sessions/{sessionId}/stop
 | POST | `/api/tracking/sessions` | [Start a session](#31-start-a-session) |
 | POST | `/api/tracking/sessions/{sessionId}/locations` | [Send one location](#32-send-one-location) |
 | POST | `/api/tracking/sessions/{sessionId}/locations/bulk` | [Upload queued locations](#33-upload-queued-locations-bulk) |
-| POST | `/api/tracking/sessions/{sessionId}/stop` | [Stop the session](#34-stop-a-session) |
+| POST | `/api/tracking/sessions/{sessionId}/geofence-events` | [Report geofence events](#34-report-geofence-events) |
+| POST | `/api/tracking/sessions/{sessionId}/stop` | [Stop the session](#35-stop-a-session) |
 
 ---
 
@@ -64,7 +68,7 @@ Stop ──► POST /api/tracking/sessions/{sessionId}/stop
 | Type | Format | Example |
 |---|---|---|
 | Session id | UUID string, issued by the server | `"f61e6baf-e426-46ca-8fff-7243ae3d5cdd"` |
-| Location id | String, 1–100 chars, **generated on the device**. Use a UUID v4. | `"0d5c3c3e-8d0f-4b8a-9d8e-2f5e9c1a7b11"` |
+| Location id / event id | String, 1–100 chars, **generated on the device**. Use a UUID v4. | `"0d5c3c3e-8d0f-4b8a-9d8e-2f5e9c1a7b11"` |
 | Latitude | JSON **number**, −90 to 90 | `21.1702` |
 | Longitude | JSON **number**, −180 to 180 | `72.8311` |
 | Timestamp | ISO 8601 string in **UTC** with a `Z` suffix | `"2026-09-28T08:32:00.000Z"` |
@@ -90,9 +94,16 @@ Call this when the user taps **Start**. Each call creates a **new** session; not
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `deviceId` | string | yes | 1–200 characters, whitespace trimmed. A stable identifier for this install or device. |
+| `geofence` | object or `null` | no | Leave it out (or send `null`) for a session without a geofence. |
+| `geofence.latitude` | number | with `geofence` | Centre, −90 to 90 |
+| `geofence.longitude` | number | with `geofence` | Centre, −180 to 180 |
+| `geofence.radiusMeters` | integer | with `geofence` | 50–100,000. Below ~50 m normal GPS drift causes false exits. |
 
 ```json
-{ "deviceId": "device-123" }
+{
+  "deviceId": "device-123",
+  "geofence": { "latitude": 21.1702, "longitude": 72.8311, "radiusMeters": 500 }
+}
 ```
 
 **Response — `201 Created`**
@@ -101,24 +112,31 @@ Call this when the user taps **Start**. Each call creates a **new** session; not
 {
   "sessionId": "f61e6baf-e426-46ca-8fff-7243ae3d5cdd",
   "status": "ACTIVE",
-  "startedAt": "2026-09-28T09:12:41.272Z"
+  "startedAt": "2026-09-28T09:12:41.272Z",
+  "geofence": { "latitude": 21.1702, "longitude": 72.8311, "radiusMeters": 500 }
 }
 ```
 
+`geofence` is `null` when none was sent.
+
 Store `sessionId` durably, not only in memory. Every later call needs it, and it must survive the app being killed while tracking.
+
+If the response has a `geofence`, register that circle with the OS geofencing API (Android `GeofencingClient`, iOS `CLCircularRegion`) and report crossings through [Report geofence events](#34-report-geofence-events). **The server doesn't check positions against the fence.** It only draws it on the web map, so the app decides inside and outside.
+
+The fence is fixed for the life of the session. There's no endpoint to change it.
 
 **Errors**
 
 | Status | When |
 |---|---|
-| 400 | `deviceId` missing, empty, not a string, or over 200 characters; or the body isn't valid JSON. |
+| 400 | `deviceId` missing, empty, not a string, or over 200 characters; `geofence` present but not an object, or any of its three fields missing or out of range; or the body isn't valid JSON. |
 
 **Example**
 
 ```bash
 curl -X POST http://localhost:3000/api/tracking/sessions \
   -H "Content-Type: application/json" \
-  -d '{"deviceId":"device-123"}'
+  -d '{"deviceId":"device-123","geofence":{"latitude":21.1702,"longitude":72.8311,"radiusMeters":500}}'
 ```
 
 ---
@@ -251,7 +269,68 @@ curl -X POST http://localhost:3000/api/tracking/sessions/$SESSION_ID/locations/b
 
 ---
 
-### 3.4 Stop a session
+### 3.4 Report geofence events
+
+```http
+POST /api/tracking/sessions/{sessionId}/geofence-events
+```
+
+Call this when the device enters or leaves the session's geofence. **One endpoint for live and offline:** send a single crossing as soon as it happens, or the whole queue once the connection is back.
+
+**Request body**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `events` | array | yes | 1–**1,000** items. |
+| `events[].id` | string | yes | Generated on the device (UUID v4), 1–100 characters. **Generate it once, when the crossing is detected, and reuse it on every retry.** |
+| `events[].type` | string | yes | `"ENTER"` or `"EXIT"` (upper case). |
+| `events[].capturedAt` | string | yes | When the crossing was detected, not when it's sent. ISO 8601 UTC. |
+| `events[].isOffline` | boolean | yes | `true` if the event waited in the offline queue, `false` for a live send. Required; there's no default. |
+
+```json
+{
+  "events": [
+    { "id": "3f1c9a2e-6b7d-4c8e-9f0a-1b2c3d4e5f60", "type": "EXIT",  "capturedAt": "2026-09-30T09:50:12.000Z", "isOffline": true },
+    { "id": "8a2d4b6c-1e3f-4a5b-8c7d-9e0f1a2b3c4d", "type": "ENTER", "capturedAt": "2026-09-30T10:05:40.000Z", "isOffline": false }
+  ]
+}
+```
+
+**Response — `200 OK`**
+
+```json
+{ "success": true, "inserted": 2, "skipped": 0 }
+```
+
+`inserted` and `skipped` mean the same as for [bulk locations](#33-upload-queued-locations-bulk).
+
+**Behaviour to rely on**
+
+- **Idempotent** on event `id`. Resending a batch never creates duplicates.
+- **All-or-nothing validation.** One invalid event rejects the batch, and the error names it, e.g. `events[3].type must be "ENTER" or "EXIT".`
+- **Stored as reported.** The server doesn't check events against the fence, the route or each other. Two `EXIT`s in a row are stored as two `EXIT`s.
+- **Order doesn't matter.** The web map orders events by `capturedAt`, so a late offline `EXIT` shows up in the right place.
+- **Stopped sessions still accept events**, so a queue flushed after Stop isn't lost.
+
+**Errors**
+
+| Status | When |
+|---|---|
+| 400 | `events` missing, empty, or over 1,000 items; or any event is invalid. |
+| 404 | No session with this `sessionId`. |
+| 409 | The session was started without a geofence. Don't retry; this is an app bug. |
+
+**Example**
+
+```bash
+curl -X POST http://localhost:3000/api/tracking/sessions/$SESSION_ID/geofence-events \
+  -H "Content-Type: application/json" \
+  -d '{"events":[{"id":"3f1c9a2e-6b7d-4c8e-9f0a-1b2c3d4e5f60","type":"EXIT","capturedAt":"2026-09-30T09:50:12.000Z","isOffline":false}]}'
+```
+
+---
+
+### 3.5 Stop a session
 
 ```http
 POST /api/tracking/sessions/{sessionId}/stop
@@ -295,6 +374,7 @@ curl -X POST http://localhost:3000/api/tracking/sessions/$SESSION_ID/stop
 | 400 | The request is malformed | **Don't retry the same payload.** It will fail the same way. Log the `error`; this is a bug in the app. |
 | 404 | The session doesn't exist | Stop sending for this session. Discard its queue and log it. |
 | 409 | Stop called on a session that's already stopped | Treat as success. |
+| 409 | Geofence events sent for a session with no geofence | Don't retry. Log it and drop those events; this is an app bug. |
 | 5xx, timeout, no network | Server or network problem | **Keep the points queued** and retry with backoff. Retries are safe because location ids make them idempotent. |
 
 ---
@@ -305,8 +385,15 @@ curl -X POST http://localhost:3000/api/tracking/sessions/$SESSION_ID/stop
 
 ```text
 on Start tap:
-    sessionId = POST /sessions { deviceId }
+    { sessionId, geofence } = POST /sessions { deviceId, geofence? }
     save sessionId to persistent storage
+    if geofence: register it with the OS geofencing API
+
+on geofence ENTER / EXIT from the OS:
+    event = { id: newUUID(), type, capturedAt: detectionTimeUtc }
+    append event to a persistent event queue    // separate from the location queue
+    if online: POST /geofence-events with the queue
+               (isOffline: false for the event just detected, true for older ones)
 
 on each GPS fix:
     point = { id: newUUID(), latitude, longitude, capturedAt: fixTimeUtc }
@@ -322,8 +409,8 @@ on each send opportunity (new fix, connectivity restored, app resumed):
     on 5xx / network error: keep the queue, retry with backoff
 
 on Stop tap:
-    stop taking GPS fixes
-    flush the queue (as above), then POST /stop
+    stop taking GPS fixes, unregister the geofence
+    flush both queues (as above), then POST /stop
     if offline: remember "stop pending" and send it after the queue is flushed
     on 200 or 409: clear sessionId
 ```
@@ -373,11 +460,32 @@ curl -s -X POST $BASE/$SESSION_ID/locations/bulk -H "Content-Type: application/j
 curl -s -X POST $BASE/$SESSION_ID/locations/bulk -H "Content-Type: application/json" -d "$BATCH"
 # → {"success":true,"inserted":0,"skipped":2}
 
-# 4. Stop, then stop again
+# 4. Geofence events. This session was started without a fence, so they're refused:
+curl -s -w " HTTP %{http_code}\n" -X POST $BASE/$SESSION_ID/geofence-events -H "Content-Type: application/json" \
+  -d '{"events":[{"id":"'$SESSION_ID'-e1","type":"EXIT","capturedAt":"2026-09-28T08:35:00.000Z","isOffline":false}]}'
+# → {"success":false,"error":"This tracking session was started without a geofence."} HTTP 409
+
+# 5. Stop, then stop again
 curl -s -X POST $BASE/$SESSION_ID/stop
 # → {"success":true,...,"status":"COMPLETED",...}
 curl -s -w " HTTP %{http_code}\n" -X POST $BASE/$SESSION_ID/stop
 # → {"success":false,"error":"Tracking session is not active.",...} HTTP 409
+```
+
+To try geofence events, start a second session with a fence and send events to it:
+
+```bash
+FENCE_ID=$(curl -s -X POST $BASE -H "Content-Type: application/json" \
+  -d '{"deviceId":"smoke-test","geofence":{"latitude":21.1702,"longitude":72.8311,"radiusMeters":500}}' \
+  | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
+
+EVENTS='{"events":[
+  {"id":"'$FENCE_ID'-e1","type":"EXIT","capturedAt":"2026-09-28T08:40:00.000Z","isOffline":true},
+  {"id":"'$FENCE_ID'-e2","type":"ENTER","capturedAt":"2026-09-28T08:55:00.000Z","isOffline":false}]}'
+curl -s -X POST $BASE/$FENCE_ID/geofence-events -H "Content-Type: application/json" -d "$EVENTS"
+# → {"success":true,"inserted":2,"skipped":0}
+curl -s -X POST $BASE/$FENCE_ID/geofence-events -H "Content-Type: application/json" -d "$EVENTS"
+# → {"success":true,"inserted":0,"skipped":2}
 ```
 
 Then open `http://localhost:3000/tracking` in a signed-in browser to see the session and its route. `http://localhost:3000/tracking/simulator` drives the same endpoints from the browser, including an offline mode, if you want to see the expected behaviour before building it.
@@ -392,3 +500,4 @@ These will change before production. Don't build anything that depends on them s
 - **No rate limiting.**
 - **No link to shipments or drivers.** A session knows only its `deviceId`.
 - Accuracy, speed, heading and battery fields aren't accepted yet; extra fields in the body are ignored.
+- **One circular geofence per session**, set at Start and never changed. Events carry no coordinates, so the map lists them rather than pinning them on the route.

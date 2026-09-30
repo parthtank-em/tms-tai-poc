@@ -8,6 +8,13 @@
 
 export type TrackingStatus = "ACTIVE" | "COMPLETED";
 
+/** A circle set when the session is created. Used for drawing only. */
+export type Geofence = {
+  latitude: number;
+  longitude: number;
+  radiusMeters: number;
+};
+
 export type SessionView = {
   id: string;
   deviceId: string;
@@ -15,6 +22,17 @@ export type SessionView = {
   endedAt: string | null;
   status: TrackingStatus;
   locationCount: number;
+  geofence: Geofence | null;
+};
+
+export type GeofenceEventType = "ENTER" | "EXIT";
+
+export type GeofenceEventView = {
+  id: string;
+  type: GeofenceEventType;
+  capturedAt: string;
+  receivedAt: string;
+  isOffline: boolean;
 };
 
 export type LocationView = {
@@ -32,9 +50,12 @@ export type LocationsResponse = {
   locations: LocationView[];
   /** Newest `capturedAt` in this response, or null when it is empty. */
   latestCapturedAt: string | null;
+  /** Ordered by `capturedAt` ascending, filtered by the same `after`. */
+  geofenceEvents: GeofenceEventView[];
   /**
    * Pass back as `?after=` on the next poll. It tracks `receivedAt`, not
-   * `capturedAt` — see `listLocations` in ./service.ts for why.
+   * `capturedAt` — see `listLocations` in ./service.ts for why — across both
+   * locations and geofence events.
    */
   cursor: string | null;
 };
@@ -45,4 +66,12 @@ export type LocationInput = {
   latitude: number;
   longitude: number;
   capturedAt: Date;
+};
+
+/** What a device sends for one geofence crossing. */
+export type GeofenceEventInput = {
+  id: string;
+  type: GeofenceEventType;
+  capturedAt: Date;
+  isOffline: boolean;
 };

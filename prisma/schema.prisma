@@ -767,7 +767,15 @@ model TrackingSession {
   createdAt DateTime              @default(now()) @map("created_at")
   updatedAt DateTime              @updatedAt @map("updated_at")
 
-  locations TrackingLocation[]
+  /// Optional geofence, drawn on the map. All three are set together or all
+  /// three are null (a CHECK constraint in the migration enforces it). The
+  /// server never tests positions against it — the device reports ENTER/EXIT.
+  geofenceLatitude     Decimal? @db.Decimal(10, 7) @map("geofence_latitude")
+  geofenceLongitude    Decimal? @db.Decimal(10, 7) @map("geofence_longitude")
+  geofenceRadiusMeters Int?     @map("geofence_radius_meters")
+
+  locations      TrackingLocation[]
+  geofenceEvents TrackingGeofenceEvent[]
 
   @@index([deviceId, startedAt])
   @@index([status])
@@ -795,4 +803,30 @@ model TrackingLocation {
   @@index([sessionId, capturedAt])
   @@index([sessionId, receivedAt])
   @@map("tracking_locations")
+}
+
+enum GeofenceEventType {
+  ENTER
+  EXIT
+}
+
+/// An enter or exit the device detected against the session's geofence.
+///
+/// Stored as reported: the server does not check it against the fence or the
+/// route. Like locations, the id comes from the device so a retried batch is
+/// skipped rather than stored twice.
+model TrackingGeofenceEvent {
+  id         String            @id
+  sessionId  String            @map("session_id")
+  session    TrackingSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  type       GeofenceEventType
+  /// When the device detected the crossing. Events are ordered by this.
+  capturedAt DateTime          @map("captured_at")
+  /// The device's own flag: true when the event sat in its offline queue.
+  isOffline  Boolean           @map("is_offline")
+  receivedAt DateTime          @default(now()) @map("received_at")
+
+  @@index([sessionId, capturedAt])
+  @@index([sessionId, receivedAt])
+  @@map("tracking_geofence_events")
 }

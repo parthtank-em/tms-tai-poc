@@ -1,16 +1,12 @@
 "use client";
 
-import {
-  AdvancedMarker,
-  APIProvider,
-  Circle,
-  Map,
-  Pin,
-  Polyline,
-  useMap,
-} from "@vis.gl/react-google-maps";
+import "mapbox-gl/dist/mapbox-gl.css";
+
+import type { Feature, FeatureCollection, LineString, Point, Polygon } from "geojson";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Layer, Map, Marker, Popup, Source, useMap } from "react-map-gl/mapbox";
+import type { MapMouseEvent } from "react-map-gl/mapbox";
 
 import { TrackingStatusBadge } from "@/components/tracking/tracking-status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -39,22 +35,71 @@ import type {
  */
 const POLL_INTERVAL_MS = 5_000;
 
-const API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+const ACCESS_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
 
-// Advanced markers need a map id. Google's DEMO_MAP_ID works for development;
-// set a real one from the Cloud console for anything longer-lived.
-const MAP_ID = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID";
-
-/** Beyond this, per-point dots cost more in DOM than they add in clarity. */
-const MAX_POINT_MARKERS = 300;
+const MAP_STYLE =
+  process.env.NEXT_PUBLIC_MAPBOX_STYLE_URL || "mapbox://styles/mapbox/streets-v12";
 
 /** How many rows each table under the map shows. */
 const TABLE_ROWS = 25;
 
-const toLatLng = (point: { latitude: number; longitude: number }) => ({
-  lat: point.latitude,
-  lng: point.longitude,
-});
+/** The per-point dot layer — the only one that reacts to the pointer. */
+const POINTS_LAYER_ID = "route-points";
+
+/** Close enough for drawing and framing a fence a few kilometres across. */
+const METERS_PER_DEGREE_LATITUDE = 111_320;
+
+/** Vertices in the polygon that stands in for the geofence circle. */
+const CIRCLE_STEPS = 64;
+
+type LngLat = [longitude: number, latitude: number];
+type Coordinates = { latitude: number; longitude: number };
+
+// Mapbox and GeoJSON put longitude first — the reverse of how the data reads.
+const toLngLat = (point: Coordinates): LngLat => [point.longitude, point.latitude];
+
+/** The fence's half-extent in degrees: wider in longitude away from the equator. */
+function radiusInDegrees(geofence: Geofence) {
+  const latitude = geofence.radiusMeters / METERS_PER_DEGREE_LATITUDE;
+  const longitude = latitude / Math.cos((geofence.latitude * Math.PI) / 180);
+  return { latitude, longitude };
+}
+
+/** Mapbox has no metre-radius circle, so the fence is drawn as a polygon. */
+function circlePolygon(geofence: Geofence): Feature<Polygon> {
+  const radius = radiusInDegrees(geofence);
+  const ring: LngLat[] = Array.from({ length: CIRCLE_STEPS }, (_, step) => {
+    const angle = (step / CIRCLE_STEPS) * 2 * Math.PI;
+    return [
+      geofence.longitude + radius.longitude * Math.cos(angle),
+      geofence.latitude + radius.latitude * Math.sin(angle),
+    ];
+  });
+  ring.push(ring[0]);
+
+  return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } };
+}
+
+/** South-west and north-east corners around the route and the fence. */
+function boundsOf(locations: LocationView[], geofence: Geofence | null): [LngLat, LngLat] {
+  const corners = locations.map(toLngLat);
+  if (geofence) {
+    const radius = radiusInDegrees(geofence);
+    corners.push(
+      [geofence.longitude - radius.longitude, geofence.latitude - radius.latitude],
+      [geofence.longitude + radius.longitude, geofence.latitude + radius.latitude],
+    );
+  }
+
+  const longitudes = corners.map(([longitude]) => longitude);
+  const latitudes = corners.map(([, latitude]) => latitude);
+  return [
+    [Math.min(...longitudes), Math.min(...latitudes)],
+    [Math.max(...longitudes), Math.max(...latitudes)],
+  ];
+}
+
+type HoveredPoint = Coordinates & { capturedAt: string };
 
 export function SessionMap({
   initial,
@@ -70,6 +115,7 @@ export function SessionMap({
   const [lastPolledAt, setLastPolledAt] = useState<Date | null>(null);
   const [pollFailed, setPollFailed] = useState(false);
   const [follow, setFollow] = useState(true);
+  const [hovered, setHovered] = useState<HoveredPoint | null>(null);
   const cursor = useRef(initial.cursor);
 
   const sessionId = initial.sessionId;
@@ -128,27 +174,57 @@ export function SessionMap({
   const lateCount = locations.filter(arrivedLate).length;
   const center = first ?? geofence;
 
+  // The dots are a map layer, not DOM elements, so their tooltip is a popup
+  // driven by what the pointer is over.
+  const onMouseMove = (event: MapMouseEvent) => {
+    const feature = event.features?.[0];
+    if (!feature || feature.geometry.type !== "Point") {
+      setHovered(null);
+      return;
+    }
+    const [longitude, latitude] = feature.geometry.coordinates;
+    setHovered({ longitude, latitude, capturedAt: String(feature.properties?.capturedAt) });
+  };
+
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_18rem]">
       <div className="h-[32rem] overflow-hidden rounded-xl border bg-muted">
-        {API_KEY ? (
-          <APIProvider apiKey={API_KEY}>
-            <Map
-              mapId={MAP_ID}
-              defaultCenter={center ? toLatLng(center) : { lat: 20, lng: 0 }}
-              defaultZoom={center ? 14 : 2}
-              gestureHandling="greedy"
-              className="size-full"
-            >
-              {geofence && <GeofenceCircle geofence={geofence} />}
-              <Route locations={locations} active={status === "ACTIVE"} />
-              <Viewport
-                locations={locations}
-                geofence={geofence}
-                follow={follow && status === "ACTIVE"}
-              />
-            </Map>
-          </APIProvider>
+        {ACCESS_TOKEN ? (
+          <Map
+            mapboxAccessToken={ACCESS_TOKEN}
+            mapStyle={MAP_STYLE}
+            initialViewState={
+              center
+                ? { longitude: center.longitude, latitude: center.latitude, zoom: 14 }
+                : { longitude: 0, latitude: 20, zoom: 2 }
+            }
+            interactiveLayerIds={[POINTS_LAYER_ID]}
+            cursor={hovered ? "pointer" : undefined}
+            onMouseMove={onMouseMove}
+            onMouseLeave={() => setHovered(null)}
+            style={{ width: "100%", height: "100%" }}
+          >
+            {geofence && <GeofenceCircle geofence={geofence} />}
+            <Route locations={locations} active={status === "ACTIVE"} />
+            {hovered && (
+              <Popup
+                longitude={hovered.longitude}
+                latitude={hovered.latitude}
+                closeButton={false}
+                closeOnClick={false}
+                offset={8}
+              >
+                <span className="text-xs">
+                  {formatDateTimeSeconds(new Date(hovered.capturedAt))}
+                </span>
+              </Popup>
+            )}
+            <Viewport
+              locations={locations}
+              geofence={geofence}
+              follow={follow && status === "ACTIVE"}
+            />
+          </Map>
         ) : (
           <MissingKey />
         )}
@@ -246,17 +322,21 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
 
 /** The fence the session was created with. Only drawn — never tested against. */
 function GeofenceCircle({ geofence }: { geofence: Geofence }) {
+  const polygon = useMemo(() => circlePolygon(geofence), [geofence]);
+
   return (
-    <Circle
-      center={toLatLng(geofence)}
-      radius={geofence.radiusMeters}
-      strokeColor="#7c3aed"
-      strokeOpacity={0.9}
-      strokeWeight={2}
-      fillColor="#7c3aed"
-      fillOpacity={0.12}
-      clickable={false}
-    />
+    <Source id="geofence" type="geojson" data={polygon}>
+      <Layer
+        id="geofence-fill"
+        type="fill"
+        paint={{ "fill-color": "#7c3aed", "fill-opacity": 0.12 }}
+      />
+      <Layer
+        id="geofence-outline"
+        type="line"
+        paint={{ "line-color": "#7c3aed", "line-opacity": 0.9, "line-width": 2 }}
+      />
+    </Source>
   );
 }
 
@@ -281,47 +361,84 @@ function GeofenceStatus({ events }: { events: GeofenceEventView[] }) {
 function Route({ locations, active }: { locations: LocationView[]; active: boolean }) {
   const first = locations.at(0);
   const last = locations.at(-1);
-  const path = locations.map(toLatLng);
+
+  // Both sources stay mounted even when empty, so the layers keep their order
+  // (fence, then line, then dots) as points arrive.
+  const line = useMemo<FeatureCollection<LineString>>(
+    () => ({
+      type: "FeatureCollection",
+      features:
+        locations.length < 2
+          ? []
+          : [
+              {
+                type: "Feature",
+                properties: {},
+                geometry: { type: "LineString", coordinates: locations.map(toLngLat) },
+              },
+            ],
+    }),
+    [locations],
+  );
+
+  const dots = useMemo<FeatureCollection<Point>>(
+    () => ({
+      type: "FeatureCollection",
+      features: locations.slice(1, -1).map((location) => ({
+        type: "Feature",
+        properties: { capturedAt: location.capturedAt, late: arrivedLate(location) },
+        geometry: { type: "Point", coordinates: toLngLat(location) },
+      })),
+    }),
+    [locations],
+  );
 
   return (
     <>
-      <Polyline path={path} strokeColor="#2563eb" strokeOpacity={0.85} strokeWeight={4} />
+      <Source id="route-line" type="geojson" data={line}>
+        <Layer
+          id="route-line"
+          type="line"
+          layout={{ "line-join": "round", "line-cap": "round" }}
+          paint={{ "line-color": "#2563eb", "line-opacity": 0.85, "line-width": 4 }}
+        />
+      </Source>
 
-      {locations.length <= MAX_POINT_MARKERS &&
-        locations.slice(1, -1).map((location) => (
-          <AdvancedMarker
-            key={location.id}
-            position={toLatLng(location)}
-            title={formatDateTimeSeconds(new Date(location.capturedAt))}
-            anchorPoint={["50%", "50%"]}
-          >
-            <div
-              className={`size-2.5 rounded-full ring-2 ring-white ${arrivedLate(location) ? "bg-amber-500" : "bg-blue-600"}`}
-            />
-          </AdvancedMarker>
-        ))}
+      <Source id={POINTS_LAYER_ID} type="geojson" data={dots}>
+        <Layer
+          id={POINTS_LAYER_ID}
+          type="circle"
+          paint={{
+            "circle-radius": 4,
+            "circle-color": ["case", ["get", "late"], "#f59e0b", "#2563eb"],
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 2,
+          }}
+        />
+      </Source>
 
       {first && (
-        <AdvancedMarker position={toLatLng(first)} title="Start" zIndex={1}>
-          <Pin background="#16a34a" borderColor="#15803d" glyphColor="#ffffff" />
-        </AdvancedMarker>
+        <Marker {...positionOf(first)} color="#16a34a" style={{ zIndex: 1 }} />
       )}
 
-      {last && last !== first && (
-        <AdvancedMarker position={toLatLng(last)} title={active ? "Current position" : "End"} zIndex={2}>
-          {active ? (
-            <span className="relative flex size-5">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-blue-500 opacity-60" />
-              <span className="relative inline-flex size-5 rounded-full border-[3px] border-white bg-blue-600 shadow" />
-            </span>
-          ) : (
-            <Pin background="#dc2626" borderColor="#b91c1c" glyphColor="#ffffff" />
-          )}
-        </AdvancedMarker>
+      {/* Separate keys: a marker picks its element (default pin or children) once, on mount. */}
+      {last && last !== first && active && (
+        <Marker key="current" {...positionOf(last)} style={{ zIndex: 2 }}>
+          <span className="relative flex size-5" title="Current position">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-blue-500 opacity-60" />
+            <span className="relative inline-flex size-5 rounded-full border-[3px] border-white bg-blue-600 shadow" />
+          </span>
+        </Marker>
+      )}
+
+      {last && last !== first && !active && (
+        <Marker key="end" {...positionOf(last)} color="#dc2626" style={{ zIndex: 2 }} />
       )}
     </>
   );
 }
+
+const positionOf = ({ longitude, latitude }: Coordinates) => ({ longitude, latitude });
 
 /**
  * Frames the route and the geofence once when either is known, then — only
@@ -337,7 +454,7 @@ function Viewport({
   geofence: Geofence | null;
   follow: boolean;
 }) {
-  const map = useMap();
+  const { current: map } = useMap();
   const framed = useRef(false);
   const lastId = locations.at(-1)?.id;
 
@@ -348,27 +465,17 @@ function Viewport({
       framed.current = true;
 
       if (locations.length === 1 && !geofence) {
-        map.setCenter(toLatLng(locations[0]));
-        map.setZoom(15);
+        map.jumpTo({ center: toLngLat(locations[0]), zoom: 15 });
         return;
       }
 
-      const bounds = new google.maps.LatLngBounds();
-      locations.forEach((location) => bounds.extend(toLatLng(location)));
-      if (geofence) {
-        // Never attached to the map — only used for its bounds.
-        const circleBounds = new google.maps.Circle({
-          center: toLatLng(geofence),
-          radius: geofence.radiusMeters,
-        }).getBounds();
-        if (circleBounds) bounds.union(circleBounds);
-      }
-      map.fitBounds(bounds, 48);
+      // No animation for the first frame — it should look like the page loaded there.
+      map.fitBounds(boundsOf(locations, geofence), { padding: 48, duration: 0 });
       return;
     }
 
     const last = locations.at(-1);
-    if (follow && last) map.panTo(toLatLng(last));
+    if (follow && last) map.panTo(toLngLat(last));
     // Re-run on a new latest point, not on every merge that changed nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, lastId, follow]);
@@ -379,9 +486,9 @@ function Viewport({
 function MissingKey() {
   return (
     <div className="flex size-full flex-col items-center justify-center gap-2 p-6 text-center text-sm">
-      <p className="font-medium">Google Maps is not configured.</p>
+      <p className="font-medium">Mapbox is not configured.</p>
       <p className="max-w-sm text-muted-foreground">
-        Set <code className="font-mono">NEXT_PUBLIC_GOOGLE_MAPS_API_KEY</code> in{" "}
+        Set <code className="font-mono">NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN</code> in{" "}
         <code className="font-mono">.env</code> and restart the dev server. The points are still
         listed below.
       </p>

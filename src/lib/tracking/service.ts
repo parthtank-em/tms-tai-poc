@@ -4,11 +4,13 @@ import type {
   Geofence,
   GeofenceEventInput,
   GeofenceEventView,
+  GeofenceTarget,
   LocationInput,
   LocationView,
   LocationsResponse,
   SessionView,
 } from "./types";
+import type { StartSessionInput } from "./validation";
 
 /**
  * Tracking persistence. The route handlers parse and respond; everything that
@@ -23,20 +25,29 @@ type SessionRow = {
   startedAt: Date;
   endedAt: Date | null;
   status: SessionView["status"];
-  geofenceLatitude: DecimalLike | null;
-  geofenceLongitude: DecimalLike | null;
-  geofenceRadiusMeters: number | null;
+  startLatitude: DecimalLike | null;
+  startLongitude: DecimalLike | null;
+  startRadiusMeters: number | null;
+  destinationLatitude: DecimalLike | null;
+  destinationLongitude: DecimalLike | null;
+  destinationRadiusMeters: number | null;
+  distanceMeters: number | null;
+  eta: Date | null;
   _count?: { locations: number };
 };
 
-/** The CHECK constraint guarantees all three columns are set or none are. */
-function toGeofence(row: Pick<SessionRow, "geofenceLatitude" | "geofenceLongitude" | "geofenceRadiusMeters">): Geofence | null {
-  if (!row.geofenceLatitude || !row.geofenceLongitude || row.geofenceRadiusMeters === null) return null;
+/** The CHECK constraints guarantee all three columns are set or none are. */
+function toGeofence(
+  latitude: DecimalLike | null,
+  longitude: DecimalLike | null,
+  radiusMeters: number | null,
+): Geofence | null {
+  if (!latitude || !longitude || radiusMeters === null) return null;
 
   return {
-    latitude: Number(row.geofenceLatitude.toString()),
-    longitude: Number(row.geofenceLongitude.toString()),
-    radiusMeters: row.geofenceRadiusMeters,
+    latitude: Number(latitude.toString()),
+    longitude: Number(longitude.toString()),
+    radiusMeters,
   };
 }
 
@@ -48,7 +59,14 @@ export function toSessionView(row: SessionRow): SessionView {
     endedAt: row.endedAt?.toISOString() ?? null,
     status: row.status,
     locationCount: row._count?.locations ?? 0,
-    geofence: toGeofence(row),
+    start: toGeofence(row.startLatitude, row.startLongitude, row.startRadiusMeters),
+    destination: toGeofence(
+      row.destinationLatitude,
+      row.destinationLongitude,
+      row.destinationRadiusMeters,
+    ),
+    distanceMeters: row.distanceMeters,
+    eta: row.eta?.toISOString() ?? null,
   };
 }
 
@@ -58,6 +76,8 @@ type LocationRow = {
   longitude: DecimalLike;
   capturedAt: Date;
   receivedAt: Date;
+  remainingDistanceMeters: number | null;
+  eta: Date | null;
 };
 
 function toLocationView(row: LocationRow): LocationView {
@@ -69,6 +89,8 @@ function toLocationView(row: LocationRow): LocationView {
     longitude: Number(row.longitude.toString()),
     capturedAt: row.capturedAt.toISOString(),
     receivedAt: row.receivedAt.toISOString(),
+    remainingDistanceMeters: row.remainingDistanceMeters,
+    eta: row.eta?.toISOString() ?? null,
   };
 }
 
@@ -81,6 +103,7 @@ function toGeofenceEventView(row: GeofenceEventRow): GeofenceEventView {
   return {
     id: row.id,
     type: row.type,
+    target: row.target,
     capturedAt: row.capturedAt.toISOString(),
     receivedAt: row.receivedAt.toISOString(),
     isOffline: row.isOffline,
@@ -93,24 +116,32 @@ const SESSION_SELECT = {
   startedAt: true,
   endedAt: true,
   status: true,
-  geofenceLatitude: true,
-  geofenceLongitude: true,
-  geofenceRadiusMeters: true,
+  startLatitude: true,
+  startLongitude: true,
+  startRadiusMeters: true,
+  destinationLatitude: true,
+  destinationLongitude: true,
+  destinationRadiusMeters: true,
+  distanceMeters: true,
+  eta: true,
   _count: { select: { locations: true } },
 } as const;
 
 /** Every press of Start is a new session — nothing is resumed. */
-export async function startSession(deviceId: string, geofence: Geofence | null): Promise<SessionView> {
+export async function startSession(input: StartSessionInput): Promise<SessionView> {
+  const { deviceId, start, destination, distanceMeters, eta } = input;
+
   const session = await prisma.trackingSession.create({
     data: {
       deviceId,
-      ...(geofence
-        ? {
-            geofenceLatitude: geofence.latitude,
-            geofenceLongitude: geofence.longitude,
-            geofenceRadiusMeters: geofence.radiusMeters,
-          }
-        : {}),
+      startLatitude: start.latitude,
+      startLongitude: start.longitude,
+      startRadiusMeters: start.radiusMeters,
+      destinationLatitude: destination.latitude,
+      destinationLongitude: destination.longitude,
+      destinationRadiusMeters: destination.radiusMeters,
+      distanceMeters,
+      eta,
     },
     select: SESSION_SELECT,
   });
@@ -169,7 +200,7 @@ export async function recordLocations(
 export type RecordGeofenceEventsResult =
   | { outcome: "recorded"; inserted: number }
   | { outcome: "not_found" }
-  | { outcome: "no_geofence" };
+  | { outcome: "no_geofence"; target: GeofenceTarget };
 
 /**
  * Stores the crossings a device reports, skipping any id already stored.
@@ -178,6 +209,9 @@ export type RecordGeofenceEventsResult =
  * ENTERs in a row, say): the device decides inside or outside, and the server
  * keeps what it was told. As with locations, a COMPLETED session still accepts
  * events so an offline queue flushed after Stop is not lost.
+ *
+ * The one check is that the named fence exists — only a session from before
+ * trips can lack one.
  */
 export async function recordGeofenceEvents(
   sessionId: string,
@@ -185,11 +219,17 @@ export async function recordGeofenceEvents(
 ): Promise<RecordGeofenceEventsResult> {
   const session = await prisma.trackingSession.findUnique({
     where: { id: sessionId },
-    select: { geofenceRadiusMeters: true },
+    select: { startRadiusMeters: true, destinationRadiusMeters: true },
   });
 
   if (!session) return { outcome: "not_found" };
-  if (session.geofenceRadiusMeters === null) return { outcome: "no_geofence" };
+
+  const missing = events.find((event) =>
+    event.target === "START"
+      ? session.startRadiusMeters === null
+      : session.destinationRadiusMeters === null,
+  );
+  if (missing) return { outcome: "no_geofence", target: missing.target };
 
   const { count } = await prisma.trackingGeofenceEvent.createMany({
     data: events.map((event) => ({ ...event, sessionId })),
@@ -255,12 +295,27 @@ export async function listLocations(
     prisma.trackingLocation.findMany({
       where,
       orderBy,
-      select: { id: true, latitude: true, longitude: true, capturedAt: true, receivedAt: true },
+      select: {
+        id: true,
+        latitude: true,
+        longitude: true,
+        capturedAt: true,
+        receivedAt: true,
+        remainingDistanceMeters: true,
+        eta: true,
+      },
     }),
     prisma.trackingGeofenceEvent.findMany({
       where,
       orderBy,
-      select: { id: true, type: true, capturedAt: true, receivedAt: true, isOffline: true },
+      select: {
+        id: true,
+        type: true,
+        target: true,
+        capturedAt: true,
+        receivedAt: true,
+        isOffline: true,
+      },
     }),
   ]);
 

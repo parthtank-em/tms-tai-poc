@@ -26,17 +26,31 @@ import { formatDateTimeSeconds } from "@/lib/format";
  * A live send that genuinely fails is queued the same way, so nothing is lost
  * if the dev server restarts mid-run.
  *
- * Geofencing works as it will on the phone: the server only stores the circle,
- * and the simulator itself decides inside or outside after every step and
- * reports each crossing as an ENTER or EXIT event.
+ * Geofencing works as it will on the phone: the server only stores the two
+ * circles (start and destination), and the simulator itself decides inside or
+ * outside of each after every step and reports each crossing as an ENTER or
+ * EXIT event naming its target.
+ *
+ * Distance and ETA also come from the "phone": straight-line distance to the
+ * destination and the walk's average speed stand in for the route a real app
+ * would get from its maps SDK.
  */
 
-type QueuedLocation = { id: string; latitude: number; longitude: number; capturedAt: string };
+type Point = { latitude: number; longitude: number };
+
+type QueuedLocation = Point & {
+  id: string;
+  capturedAt: string;
+  remainingDistanceMeters: number;
+  eta: string;
+};
+
+type Target = "START" | "DESTINATION";
 
 /** `isOffline` is decided when the event is sent, not when it is detected. */
-type QueuedGeofenceEvent = { id: string; type: "ENTER" | "EXIT"; capturedAt: string };
+type QueuedGeofenceEvent = { id: string; type: "ENTER" | "EXIT"; target: Target; capturedAt: string };
 
-type Fence = { latitude: number; longitude: number; radiusMeters: number };
+type Fence = Point & { radiusMeters: number };
 
 type LogEntry = { at: Date; text: string; tone: "info" | "ok" | "error" };
 
@@ -46,19 +60,32 @@ const DEFAULT_INTERVAL_SECONDS = 5;
 /** Surat, as in the plan's examples. */
 const DEFAULT_START = { latitude: 21.1702, longitude: 72.8311 };
 
+/** About 2 km north-east — a couple of minutes of walk at the default interval. */
+const DEFAULT_DESTINATION = { latitude: 21.1832, longitude: 72.8441 };
+
 const METERS_PER_DEGREE = 111_320;
 
-/** A few steps of the random walk, so a run shows an exit fairly soon. */
-const DEFAULT_GEOFENCE_RADIUS_METERS = 500;
+/** A few steps of the walk, so a run shows the exit from the start fairly soon. */
+const DEFAULT_START_RADIUS_METERS = 300;
+const DEFAULT_DESTINATION_RADIUS_METERS = 300;
+
+/** Each step moves 80–200 m; the midpoint drives the simulated ETA. */
+const MIN_STEP_METERS = 80;
+const MAX_STEP_METERS = 200;
+const AVERAGE_STEP_METERS = (MIN_STEP_METERS + MAX_STEP_METERS) / 2;
+
+const TARGET_LABEL: Record<Target, string> = { START: "start", DESTINATION: "destination" };
+
+const TARGETS: Target[] = ["START", "DESTINATION"];
+
+const NO_SIDES: Record<Target, boolean | null> = { START: null, DESTINATION: null };
 
 const EARTH_RADIUS_METERS = 6_371_000;
 
+const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+
 /** Haversine — what the phone's OS geofencing does for us on a real device. */
-function distanceMeters(
-  a: { latitude: number; longitude: number },
-  b: { latitude: number; longitude: number },
-): number {
-  const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+function distanceMeters(a: Point, b: Point): number {
   const dLat = toRadians(b.latitude - a.latitude);
   const dLng = toRadians(b.longitude - a.longitude);
   const h =
@@ -67,23 +94,39 @@ function distanceMeters(
   return 2 * EARTH_RADIUS_METERS * Math.asin(Math.sqrt(h));
 }
 
+/** Heading from `a` to `b`, in radians clockwise from north — the walk's convention. */
+function bearing(a: Point, b: Point): number {
+  const north = b.latitude - a.latitude;
+  const east = (b.longitude - a.longitude) * Math.cos(toRadians(a.latitude));
+  return Math.atan2(east, north);
+}
+
 /**
- * A random walk that mostly keeps its heading, so the route looks like a
- * vehicle on roads rather than a cloud of points.
+ * A walk that wanders but drifts toward the destination, so the route looks
+ * like a vehicle on roads and eventually arrives. Within one step it parks on
+ * the destination, so it does not circle the fence and flap ENTER/EXIT.
  */
-function nextPosition(
-  from: { latitude: number; longitude: number },
-  heading: number,
-): { latitude: number; longitude: number; heading: number } {
-  const turned = heading + (Math.random() - 0.5) * (Math.PI / 3);
-  const meters = 80 + Math.random() * 120;
-  const latitude = from.latitude + (meters * Math.cos(turned)) / METERS_PER_DEGREE;
+function nextPosition(from: Point, destination: Point): Point {
+  const remaining = distanceMeters(from, destination);
+  if (remaining <= MAX_STEP_METERS) return destination;
+
+  const heading = bearing(from, destination) + (Math.random() - 0.5) * (Math.PI / 2);
+  const meters = MIN_STEP_METERS + Math.random() * (MAX_STEP_METERS - MIN_STEP_METERS);
+  const latitude = from.latitude + (meters * Math.cos(heading)) / METERS_PER_DEGREE;
   const longitude =
     from.longitude +
-    (meters * Math.sin(turned)) / (METERS_PER_DEGREE * Math.cos((from.latitude * Math.PI) / 180));
+    (meters * Math.sin(heading)) / (METERS_PER_DEGREE * Math.cos(toRadians(from.latitude)));
 
   const round = (value: number) => Math.round(value * 1e7) / 1e7;
-  return { latitude: round(latitude), longitude: round(longitude), heading: turned };
+  return { latitude: round(latitude), longitude: round(longitude) };
+}
+
+/** What the phone would report: distance left, and when it gets there at the walk's pace. */
+function progress(from: Point, destination: Point, intervalSeconds: number, now: Date) {
+  const remainingDistanceMeters = Math.round(distanceMeters(from, destination));
+  const metersPerSecond = AVERAGE_STEP_METERS / Math.max(1, intervalSeconds);
+  const eta = new Date(now.getTime() + (remainingDistanceMeters / metersPerSecond) * 1000);
+  return { remainingDistanceMeters, eta: eta.toISOString() };
 }
 
 async function post(
@@ -105,8 +148,10 @@ export function Simulator() {
   const [intervalSeconds, setIntervalSeconds] = useState(DEFAULT_INTERVAL_SECONDS);
   const [startLatitude, setStartLatitude] = useState(DEFAULT_START.latitude);
   const [startLongitude, setStartLongitude] = useState(DEFAULT_START.longitude);
-  const [geofenceEnabled, setGeofenceEnabled] = useState(true);
-  const [geofenceRadius, setGeofenceRadius] = useState(DEFAULT_GEOFENCE_RADIUS_METERS);
+  const [startRadius, setStartRadius] = useState(DEFAULT_START_RADIUS_METERS);
+  const [destinationLatitude, setDestinationLatitude] = useState(DEFAULT_DESTINATION.latitude);
+  const [destinationLongitude, setDestinationLongitude] = useState(DEFAULT_DESTINATION.longitude);
+  const [destinationRadius, setDestinationRadius] = useState(DEFAULT_DESTINATION_RADIUS_METERS);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -118,24 +163,26 @@ export function Simulator() {
   const [position, setPosition] = useState<QueuedLocation | null>(null);
   const [eventQueue, setEventQueue] = useState<QueuedGeofenceEvent[]>([]);
   const [eventsSent, setEventsSent] = useState(0);
-  const [inside, setInside] = useState<boolean | null>(null);
+  const [inside, setInside] = useState<Record<Target, boolean | null>>(NO_SIDES);
   const [log, setLog] = useState<LogEntry[]>([]);
 
   // The tick runs from a timer, so it reads the latest values through refs
   // rather than whatever the render that scheduled it happened to capture.
-  // Start() replaces this with the chosen start point and a random heading.
-  const walk = useRef({ ...DEFAULT_START, heading: 0 });
+  // Start() replaces this with the chosen start point.
+  const walk = useRef<Point>(DEFAULT_START);
   const onlineRef = useRef(online);
   const sessionRef = useRef(sessionId);
-  // The fence the current session was started with, and which side of it the
-  // device was on after the last step. Null when the session has no fence.
-  const fenceRef = useRef<Fence | null>(null);
-  const insideRef = useRef<boolean | null>(null);
+  const intervalRef = useRef(intervalSeconds);
+  // The fences the current session was started with, and which side of each
+  // the device was on after the last step (null before the first step).
+  const fencesRef = useRef<Record<Target, Fence> | null>(null);
+  const insideRef = useRef<Record<Target, boolean | null>>(NO_SIDES);
 
   useEffect(() => {
     onlineRef.current = online;
     sessionRef.current = sessionId;
-  }, [online, sessionId]);
+    intervalRef.current = intervalSeconds;
+  }, [online, sessionId, intervalSeconds]);
 
   const addLog = useCallback((text: string, tone: LogEntry["tone"] = "info") => {
     setLog((entries) => [{ at: new Date(), text, tone }, ...entries].slice(0, 100));
@@ -148,7 +195,7 @@ export function Simulator() {
   /** Sends one crossing live, or queues it when offline or the send fails. */
   const reportCrossing = useCallback(
     async (session: string, event: QueuedGeofenceEvent) => {
-      const label = event.type === "ENTER" ? "Entered geofence" : "Left geofence";
+      const label = `${event.type === "ENTER" ? "Entered" : "Left"} ${TARGET_LABEL[event.target]} geofence`;
 
       if (!onlineRef.current) {
         setEventQueue((current) => [...current, event]);
@@ -173,44 +220,52 @@ export function Simulator() {
   );
 
   /**
-   * Compares the new position against the fence and reports a change of side.
-   * The first position only sets the starting side, except that starting
-   * inside reports an ENTER — as Android's INITIAL_TRIGGER_ENTER would — so
-   * the map has a status from the start.
+   * Compares the new position against each fence and reports a change of
+   * side. The first position only sets the starting side, except that
+   * starting inside reports an ENTER — as Android's INITIAL_TRIGGER_ENTER
+   * would — so the map has a status from the start.
    */
-  const checkGeofence = useCallback(
+  const checkGeofences = useCallback(
     async (session: string, location: QueuedLocation) => {
-      const fence = fenceRef.current;
-      if (!fence) return;
+      const fences = fencesRef.current;
+      if (!fences) return;
 
-      const nowInside = distanceMeters(location, fence) <= fence.radiusMeters;
-      const previous = insideRef.current;
-      insideRef.current = nowInside;
-      setInside(nowInside);
+      for (const target of TARGETS) {
+        const fence = fences[target];
+        const nowInside = distanceMeters(location, fence) <= fence.radiusMeters;
+        const previous = insideRef.current[target];
+        insideRef.current = { ...insideRef.current, [target]: nowInside };
 
-      if (previous === nowInside || (previous === null && !nowInside)) return;
+        if (previous === nowInside || (previous === null && !nowInside)) continue;
 
-      await reportCrossing(session, {
-        id: crypto.randomUUID(),
-        type: nowInside ? "ENTER" : "EXIT",
-        capturedAt: location.capturedAt,
-      });
+        await reportCrossing(session, {
+          id: crypto.randomUUID(),
+          type: nowInside ? "ENTER" : "EXIT",
+          target,
+          capturedAt: location.capturedAt,
+        });
+      }
+
+      setInside(insideRef.current);
     },
     [reportCrossing],
   );
 
   const tick = useCallback(async () => {
     const session = sessionRef.current;
-    if (!session) return;
+    const fences = fencesRef.current;
+    if (!session || !fences) return;
 
-    const next = nextPosition(walk.current, walk.current.heading);
+    const next = nextPosition(walk.current, fences.DESTINATION);
     walk.current = next;
 
+    const now = new Date();
     const location: QueuedLocation = {
       id: crypto.randomUUID(),
       latitude: next.latitude,
       longitude: next.longitude,
-      capturedAt: new Date().toISOString(),
+      capturedAt: now.toISOString(),
+      ...progress(next, fences.DESTINATION, intervalRef.current, now),
     };
     setPosition(location);
 
@@ -230,8 +285,8 @@ export function Simulator() {
       }
     }
 
-    await checkGeofence(session, location);
-  }, [addLog, enqueue, checkGeofence]);
+    await checkGeofences(session, location);
+  }, [addLog, enqueue, checkGeofences]);
 
   useEffect(() => {
     if (!running) return;
@@ -289,24 +344,32 @@ export function Simulator() {
   async function start() {
     setBusy(true);
     try {
-      const fence: Fence | null = geofenceEnabled
-        ? { latitude: startLatitude, longitude: startLongitude, radiusMeters: geofenceRadius }
-        : null;
+      const fences: Record<Target, Fence> = {
+        START: { latitude: startLatitude, longitude: startLongitude, radiusMeters: startRadius },
+        DESTINATION: {
+          latitude: destinationLatitude,
+          longitude: destinationLongitude,
+          radiusMeters: destinationRadius,
+        },
+      };
+      const planned = progress(fences.START, fences.DESTINATION, intervalSeconds, new Date());
 
-      const result = await post("/api/tracking/sessions", { deviceId, geofence: fence });
+      const result = await post("/api/tracking/sessions", {
+        deviceId,
+        start: fences.START,
+        destination: fences.DESTINATION,
+        distanceMeters: planned.remainingDistanceMeters,
+        eta: planned.eta,
+      });
       if (!result.ok) {
         addLog(`Start failed: ${String(result.json.error ?? `HTTP ${result.status}`)}`, "error");
         return;
       }
 
-      walk.current = {
-        latitude: startLatitude,
-        longitude: startLongitude,
-        heading: Math.random() * 2 * Math.PI,
-      };
-      fenceRef.current = fence;
-      insideRef.current = null;
-      setInside(null);
+      walk.current = { latitude: startLatitude, longitude: startLongitude };
+      fencesRef.current = fences;
+      insideRef.current = NO_SIDES;
+      setInside(NO_SIDES);
       setEventQueue([]);
       setEventsSent(0);
       setSessionId(String(result.json.sessionId));
@@ -316,7 +379,10 @@ export function Simulator() {
       setSentCount(0);
       setPosition(null);
       setRunning(true);
-      addLog(`Started session ${String(result.json.sessionId)}`, "ok");
+      addLog(
+        `Started session ${String(result.json.sessionId)} — ${planned.remainingDistanceMeters} m to go`,
+        "ok",
+      );
 
       // Report the starting fix straight away rather than one interval later.
       await tick();
@@ -416,57 +482,30 @@ export function Simulator() {
             />
           </Field>
 
-          <div className="grid grid-cols-2 gap-3">
-            <Field id="lat" label="Start latitude">
-              <Input
-                id="lat"
-                type="number"
-                step="any"
-                value={startLatitude}
-                onChange={(event) => setStartLatitude(Number(event.target.value))}
-                disabled={active}
-              />
-            </Field>
-            <Field id="lng" label="Start longitude">
-              <Input
-                id="lng"
-                type="number"
-                step="any"
-                value={startLongitude}
-                onChange={(event) => setStartLongitude(Number(event.target.value))}
-                disabled={active}
-              />
-            </Field>
-          </div>
+          <TripEnd
+            id="start"
+            title="Start"
+            latitude={startLatitude}
+            longitude={startLongitude}
+            radius={startRadius}
+            onLatitude={setStartLatitude}
+            onLongitude={setStartLongitude}
+            onRadius={setStartRadius}
+            disabled={active}
+          />
 
-          <div className="grid gap-3 rounded-lg border p-3">
-            <label className="flex items-center gap-2 text-sm font-medium">
-              <input
-                type="checkbox"
-                checked={geofenceEnabled}
-                onChange={(event) => setGeofenceEnabled(event.target.checked)}
-                disabled={active}
-                className="size-4 accent-primary"
-              />
-              Geofence around the start point
-            </label>
-            {geofenceEnabled && (
-              <Field
-                id="radius"
-                label="Geofence radius (meters)"
-                hint="Each step moves 80–200 m, so the walk leaves a small fence within a few steps."
-              >
-                <Input
-                  id="radius"
-                  type="number"
-                  min={50}
-                  value={geofenceRadius}
-                  onChange={(event) => setGeofenceRadius(Math.round(Number(event.target.value)) || 50)}
-                  disabled={active}
-                />
-              </Field>
-            )}
-          </div>
+          <TripEnd
+            id="destination"
+            title="Destination"
+            hint="The walk drifts toward it in 80–200 m steps and parks there on arrival."
+            latitude={destinationLatitude}
+            longitude={destinationLongitude}
+            radius={destinationRadius}
+            onLatitude={setDestinationLatitude}
+            onLongitude={setDestinationLongitude}
+            onRadius={setDestinationRadius}
+            disabled={active}
+          />
 
           <div className="flex flex-wrap gap-2 pt-2">
             {active ? (
@@ -525,14 +564,17 @@ export function Simulator() {
             </Stat>
             <Stat label="Stored on server">{sentCount}</Stat>
             <Stat label="Queued on device">{queue.length}</Stat>
-            <Stat label="Geofence">
-              {inside === null ? (
-                "—"
-              ) : (
-                <span className={inside ? "text-emerald-600" : "font-medium text-amber-600"}>
-                  {inside ? "Inside" : "Outside"}
-                </span>
-              )}
+            <Stat label="Start geofence">
+              <Side inside={inside.START} />
+            </Stat>
+            <Stat label="Destination geofence">
+              <Side inside={inside.DESTINATION} />
+            </Stat>
+            <Stat label="Remaining distance">
+              {position ? `${position.remainingDistanceMeters.toLocaleString("en-US")} m` : "—"}
+            </Stat>
+            <Stat label="ETA">
+              {position ? formatDateTimeSeconds(new Date(position.eta)) : "—"}
             </Stat>
             <Stat label="Geofence events">
               {eventsSent} sent · {eventQueue.length} queued
@@ -614,6 +656,80 @@ function Field({
       {children}
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
+  );
+}
+
+/** A trip end's point and geofence radius. */
+function TripEnd({
+  id,
+  title,
+  hint,
+  latitude,
+  longitude,
+  radius,
+  onLatitude,
+  onLongitude,
+  onRadius,
+  disabled,
+}: {
+  id: string;
+  title: string;
+  hint?: string;
+  latitude: number;
+  longitude: number;
+  radius: number;
+  onLatitude: (value: number) => void;
+  onLongitude: (value: number) => void;
+  onRadius: (value: number) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="grid gap-3 rounded-lg border p-3">
+      <p className="text-sm font-medium">{title}</p>
+      <div className="grid grid-cols-3 gap-3">
+        <Field id={`${id}-lat`} label="Latitude">
+          <Input
+            id={`${id}-lat`}
+            type="number"
+            step="any"
+            value={latitude}
+            onChange={(event) => onLatitude(Number(event.target.value))}
+            disabled={disabled}
+          />
+        </Field>
+        <Field id={`${id}-lng`} label="Longitude">
+          <Input
+            id={`${id}-lng`}
+            type="number"
+            step="any"
+            value={longitude}
+            onChange={(event) => onLongitude(Number(event.target.value))}
+            disabled={disabled}
+          />
+        </Field>
+        <Field id={`${id}-radius`} label="Geofence (m)">
+          <Input
+            id={`${id}-radius`}
+            type="number"
+            min={50}
+            value={radius}
+            onChange={(event) => onRadius(Math.round(Number(event.target.value)) || 50)}
+            disabled={disabled}
+          />
+        </Field>
+      </div>
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+function Side({ inside }: { inside: boolean | null }) {
+  if (inside === null) return "—";
+
+  return (
+    <span className={inside ? "text-emerald-600" : "font-medium text-amber-600"}>
+      {inside ? "Inside" : "Outside"}
+    </span>
   );
 }
 

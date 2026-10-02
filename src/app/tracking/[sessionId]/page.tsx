@@ -51,7 +51,7 @@ export default async function TrackingSessionPage({
         </p>
       </header>
 
-      <SessionMap initial={locations} geofence={session.geofence} />
+      <SessionMap initial={locations} session={session} />
     </main>
   );
 }

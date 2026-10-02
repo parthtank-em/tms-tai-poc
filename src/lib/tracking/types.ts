@@ -8,7 +8,10 @@
 
 export type TrackingStatus = "ACTIVE" | "COMPLETED";
 
-/** A circle set when the session is created. Used for drawing only. */
+/**
+ * A trip end — the start or the destination — and the geofence circle around
+ * it. Set when the session is created; the server only stores and draws it.
+ */
 export type Geofence = {
   latitude: number;
   longitude: number;
@@ -22,14 +25,27 @@ export type SessionView = {
   endedAt: string | null;
   status: TrackingStatus;
   locationCount: number;
-  geofence: Geofence | null;
+  /**
+   * Required on every new session. Null only on sessions created before trips
+   * had a start and a destination.
+   */
+  start: Geofence | null;
+  destination: Geofence | null;
+  /** The phone's planned trip distance at Start. */
+  distanceMeters: number | null;
+  /** The phone's ETA at Start. Later updates ride on each location. */
+  eta: string | null;
 };
 
 export type GeofenceEventType = "ENTER" | "EXIT";
 
+/** Which of the session's two fences a crossing was against. */
+export type GeofenceTarget = "START" | "DESTINATION";
+
 export type GeofenceEventView = {
   id: string;
   type: GeofenceEventType;
+  target: GeofenceTarget;
   capturedAt: string;
   receivedAt: string;
   isOffline: boolean;
@@ -41,6 +57,9 @@ export type LocationView = {
   longitude: number;
   capturedAt: string;
   receivedAt: string;
+  /** The phone's remaining distance and ETA at this fix, when it had them. */
+  remainingDistanceMeters: number | null;
+  eta: string | null;
 };
 
 export type LocationsResponse = {
@@ -66,12 +85,15 @@ export type LocationInput = {
   latitude: number;
   longitude: number;
   capturedAt: Date;
+  remainingDistanceMeters: number | null;
+  eta: Date | null;
 };
 
 /** What a device sends for one geofence crossing. */
 export type GeofenceEventInput = {
   id: string;
   type: GeofenceEventType;
+  target: GeofenceTarget;
   capturedAt: Date;
   isOffline: boolean;
 };

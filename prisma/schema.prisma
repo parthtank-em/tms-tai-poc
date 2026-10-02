@@ -767,12 +767,23 @@ model TrackingSession {
   createdAt DateTime              @default(now()) @map("created_at")
   updatedAt DateTime              @updatedAt @map("updated_at")
 
-  /// Optional geofence, drawn on the map. All three are set together or all
-  /// three are null (a CHECK constraint in the migration enforces it). The
-  /// server never tests positions against it — the device reports ENTER/EXIT.
-  geofenceLatitude     Decimal? @db.Decimal(10, 7) @map("geofence_latitude")
-  geofenceLongitude    Decimal? @db.Decimal(10, 7) @map("geofence_longitude")
-  geofenceRadiusMeters Int?     @map("geofence_radius_meters")
+  /// The trip's start and destination, each with the radius of the geofence
+  /// the device registers around it. The API requires both on every new
+  /// session; the columns are nullable only for sessions created before trips
+  /// existed. Per point, all three are set together or none are (CHECK
+  /// constraints in the migration). The server never tests positions against
+  /// them — the device reports ENTER/EXIT.
+  startLatitude           Decimal? @db.Decimal(10, 7) @map("start_latitude")
+  startLongitude          Decimal? @db.Decimal(10, 7) @map("start_longitude")
+  startRadiusMeters       Int?     @map("start_radius_meters")
+  destinationLatitude     Decimal? @db.Decimal(10, 7) @map("destination_latitude")
+  destinationLongitude    Decimal? @db.Decimal(10, 7) @map("destination_longitude")
+  destinationRadiusMeters Int?     @map("destination_radius_meters")
+
+  /// The phone's planned distance and ETA at Start. Stored as reported; later
+  /// updates are on each `TrackingLocation`.
+  distanceMeters Int?      @map("distance_meters")
+  eta            DateTime? @map("eta")
 
   locations      TrackingLocation[]
   geofenceEvents TrackingGeofenceEvent[]
@@ -799,6 +810,12 @@ model TrackingLocation {
   /// than `capturedAt` — the live map polls on this, not on `capturedAt`, so a
   /// late batch of old points is still picked up.
   receivedAt DateTime        @default(now()) @map("received_at")
+  /// The phone's remaining distance and ETA at this fix. Optional — a phone
+  /// without a route yet still reports where it is. The session's current ETA
+  /// is the one on the newest `capturedAt`, not the newest `receivedAt`, so a
+  /// late offline batch does not overwrite a fresher live value.
+  remainingDistanceMeters Int?      @map("remaining_distance_meters")
+  eta                     DateTime? @map("eta")
 
   @@index([sessionId, capturedAt])
   @@index([sessionId, receivedAt])
@@ -810,7 +827,13 @@ enum GeofenceEventType {
   EXIT
 }
 
-/// An enter or exit the device detected against the session's geofence.
+enum GeofenceTarget {
+  START
+  DESTINATION
+}
+
+/// An enter or exit the device detected against one of the session's two
+/// geofences — `target` says which.
 ///
 /// Stored as reported: the server does not check it against the fence or the
 /// route. Like locations, the id comes from the device so a retried batch is
@@ -820,6 +843,7 @@ model TrackingGeofenceEvent {
   sessionId  String            @map("session_id")
   session    TrackingSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   type       GeofenceEventType
+  target     GeofenceTarget
   /// When the device detected the crossing. Events are ordered by this.
   capturedAt DateTime          @map("captured_at")
   /// The device's own flag: true when the event sat in its offline queue.

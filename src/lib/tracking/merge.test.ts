@@ -9,6 +9,8 @@ const at = (id: string, capturedAt: string, receivedAt = capturedAt): LocationVi
   longitude: 72.83,
   capturedAt,
   receivedAt,
+  remainingDistanceMeters: null,
+  eta: null,
 });
 
 describe("mergeLocations", () => {
@@ -33,6 +35,7 @@ describe("mergeLocations", () => {
 const crossing = (id: string, capturedAt: string, isOffline = false): GeofenceEventView => ({
   id,
   type: "EXIT",
+  target: "START",
   capturedAt,
   receivedAt: "2026-09-30T10:10:00.000Z",
   isOffline,

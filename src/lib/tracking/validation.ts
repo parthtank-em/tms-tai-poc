@@ -31,6 +31,7 @@ export const MIN_GEOFENCE_RADIUS_METERS = 50;
 export const MAX_GEOFENCE_RADIUS_METERS = 100_000;
 
 const GEOFENCE_EVENT_TYPES = ["ENTER", "EXIT"] as const;
+const GEOFENCE_TARGETS = ["START", "DESTINATION"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -55,8 +56,33 @@ function timestamp(value: unknown): Date | null {
   return date && !Number.isNaN(date.getTime()) ? date : null;
 }
 
-export type StartSessionInput = { deviceId: string; geofence: Geofence | null };
+/** Roughly half the planet's circumference — refuses only obvious unit mistakes. */
+export const MAX_DISTANCE_METERS = 20_000_000;
 
+function distance(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= MAX_DISTANCE_METERS
+    ? value
+    : null;
+}
+
+const distanceError = (field: string) =>
+  `${field} must be a whole number of meters between 0 and ${MAX_DISTANCE_METERS}.`;
+
+export type StartSessionInput = {
+  deviceId: string;
+  start: Geofence;
+  destination: Geofence;
+  distanceMeters: number;
+  eta: Date;
+};
+
+/**
+ * Distance and ETA come from the phone, not the server: for the POC the device
+ * already has a route, and the server only stores and shows what it reports.
+ */
 export function parseStartSession(body: unknown): Parsed<StartSessionInput> {
   const deviceId = isRecord(body) ? nonEmptyString(body.deviceId, MAX_DEVICE_ID_LENGTH) : null;
 
@@ -64,23 +90,38 @@ export function parseStartSession(body: unknown): Parsed<StartSessionInput> {
     return { ok: false, error: `deviceId is required (a string of at most ${MAX_DEVICE_ID_LENGTH} characters).` };
   }
 
-  const geofence = parseGeofence((body as Record<string, unknown>).geofence);
-  if (!geofence.ok) return geofence;
+  const record = body as Record<string, unknown>;
 
-  return { ok: true, value: { deviceId, geofence: geofence.value } };
+  const start = parseGeofence(record.start, "start");
+  if (!start.ok) return start;
+
+  const destination = parseGeofence(record.destination, "destination");
+  if (!destination.ok) return destination;
+
+  const distanceMeters = distance(record.distanceMeters);
+  if (distanceMeters === null) return { ok: false, error: distanceError("distanceMeters") };
+
+  const eta = timestamp(record.eta);
+  if (!eta) return { ok: false, error: "eta must be an ISO 8601 timestamp." };
+
+  return {
+    ok: true,
+    value: { deviceId, start: start.value, destination: destination.value, distanceMeters, eta },
+  };
 }
 
-/** Optional: absent or null means the session has no geofence. */
-function parseGeofence(value: unknown): Parsed<Geofence | null> {
-  if (value === undefined || value === null) return { ok: true, value: null };
-  if (!isRecord(value)) return { ok: false, error: "geofence must be an object." };
+/** A trip end: a point and the radius of the geofence the device registers around it. */
+function parseGeofence(value: unknown, label: string): Parsed<Geofence> {
+  if (!isRecord(value)) {
+    return { ok: false, error: `${label} is required — an object with latitude, longitude and radiusMeters.` };
+  }
 
   const latitude = coordinate(value.latitude, 90);
-  if (latitude === null) return { ok: false, error: "geofence.latitude must be a number between -90 and 90." };
+  if (latitude === null) return { ok: false, error: `${label}.latitude must be a number between -90 and 90.` };
 
   const longitude = coordinate(value.longitude, 180);
   if (longitude === null) {
-    return { ok: false, error: "geofence.longitude must be a number between -180 and 180." };
+    return { ok: false, error: `${label}.longitude must be a number between -180 and 180.` };
   }
 
   const radiusMeters = value.radiusMeters;
@@ -92,7 +133,7 @@ function parseGeofence(value: unknown): Parsed<Geofence | null> {
   ) {
     return {
       ok: false,
-      error: `geofence.radiusMeters must be a whole number between ${MIN_GEOFENCE_RADIUS_METERS} and ${MAX_GEOFENCE_RADIUS_METERS}.`,
+      error: `${label}.radiusMeters must be a whole number between ${MIN_GEOFENCE_RADIUS_METERS} and ${MAX_GEOFENCE_RADIUS_METERS}.`,
     };
   }
 
@@ -121,7 +162,24 @@ export function parseLocation(body: unknown, label = "location"): Parsed<Locatio
   const capturedAt = timestamp(body.capturedAt);
   if (!capturedAt) return { ok: false, error: `${label}.capturedAt must be an ISO 8601 timestamp.` };
 
-  return { ok: true, value: { id, latitude, longitude, capturedAt } };
+  // Optional: a phone without a route yet (no GPS lock, say) still has a fix
+  // worth keeping. Present but malformed is still an error, so a bug in the
+  // app is heard rather than silently stored as "unknown".
+  let remainingDistanceMeters: number | null = null;
+  if (body.remainingDistanceMeters !== undefined && body.remainingDistanceMeters !== null) {
+    remainingDistanceMeters = distance(body.remainingDistanceMeters);
+    if (remainingDistanceMeters === null) {
+      return { ok: false, error: distanceError(`${label}.remainingDistanceMeters`) };
+    }
+  }
+
+  let eta: Date | null = null;
+  if (body.eta !== undefined && body.eta !== null) {
+    eta = timestamp(body.eta);
+    if (!eta) return { ok: false, error: `${label}.eta must be an ISO 8601 timestamp.` };
+  }
+
+  return { ok: true, value: { id, latitude, longitude, capturedAt, remainingDistanceMeters, eta } };
 }
 
 function parseGeofenceEvent(body: unknown, label: string): Parsed<GeofenceEventInput> {
@@ -138,6 +196,9 @@ function parseGeofenceEvent(body: unknown, label: string): Parsed<GeofenceEventI
   const type = GEOFENCE_EVENT_TYPES.find((candidate) => candidate === body.type);
   if (!type) return { ok: false, error: `${label}.type must be "ENTER" or "EXIT".` };
 
+  const target = GEOFENCE_TARGETS.find((candidate) => candidate === body.target);
+  if (!target) return { ok: false, error: `${label}.target must be "START" or "DESTINATION".` };
+
   const capturedAt = timestamp(body.capturedAt);
   if (!capturedAt) return { ok: false, error: `${label}.capturedAt must be an ISO 8601 timestamp.` };
 
@@ -147,7 +208,7 @@ function parseGeofenceEvent(body: unknown, label: string): Parsed<GeofenceEventI
     return { ok: false, error: `${label}.isOffline must be true or false.` };
   }
 
-  return { ok: true, value: { id, type, capturedAt, isOffline: body.isOffline } };
+  return { ok: true, value: { id, type, target, capturedAt, isOffline: body.isOffline } };
 }
 
 /**

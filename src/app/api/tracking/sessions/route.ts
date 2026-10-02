@@ -6,8 +6,10 @@ import { parseStartSession } from "@/lib/tracking/validation";
 /**
  * `POST /api/tracking/sessions` — the device pressed Start.
  *
- * `geofence` is optional. When given it is echoed back so the device can
- * register the same circle with the OS geofencing API.
+ * `start` and `destination` are required, each a point with a geofence
+ * radius. Both are echoed back so the device can register the same two
+ * circles with the OS geofencing API. `distanceMeters` and `eta` are the
+ * phone's own route figures; the server stores them as reported.
  *
  * Unauthenticated: authentication is out of scope for this POC (plan §1), and
  * the mobile app has no console session to present. Revisit before anything
@@ -17,14 +19,17 @@ export async function POST(request: Request): Promise<Response> {
   const parsed = parseStartSession(await readJson(request));
   if (!parsed.ok) return badRequest(parsed.error);
 
-  const session = await startSession(parsed.value.deviceId, parsed.value.geofence);
+  const session = await startSession(parsed.value);
 
   return Response.json(
     {
       sessionId: session.id,
       status: session.status,
       startedAt: session.startedAt,
-      geofence: session.geofence,
+      start: session.start,
+      destination: session.destination,
+      distanceMeters: session.distanceMeters,
+      eta: session.eta,
     },
     { status: 201 },
   );

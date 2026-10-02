@@ -1,4 +1,4 @@
-import { EyeIcon, SmartphoneIcon } from "lucide-react";
+import { EyeIcon /* , SmartphoneIcon */ } from "lucide-react";
 import Link from "next/link";
 
 import { TrackingStatusBadge } from "@/components/tracking/tracking-status-badge";
@@ -36,10 +36,12 @@ export default async function TrackingSessionsPage() {
           </p>
         </div>
 
+        {/* Hidden for now — the simulator is still reachable at /tracking/simulator.
         <Button render={<Link href="/tracking/simulator" />} variant="outline">
           <SmartphoneIcon />
           Mobile simulator
         </Button>
+        */}
       </header>
 
       {sessions.length === 0 ? (
@@ -47,11 +49,14 @@ export default async function TrackingSessionsPage() {
           <CardHeader>
             <CardTitle>No sessions yet</CardTitle>
             <CardDescription>
+              Start one from the mobile app.
+              {/* Hidden along with the header button.
               Start one from the mobile app, or from the{" "}
               <Link href="/tracking/simulator" className="underline underline-offset-4">
                 simulator
               </Link>
               .
+              */}
             </CardDescription>
           </CardHeader>
         </Card>

@@ -22,11 +22,14 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDateTimeSeconds, formatNumber } from "@/lib/format";
 import { arrivedLate, mergeGeofenceEvents, mergeLocations } from "@/lib/tracking/merge";
+import { formatDistance, latestProgress } from "@/lib/tracking/trip";
 import type {
   Geofence,
   GeofenceEventView,
+  GeofenceTarget,
   LocationView,
   LocationsResponse,
+  SessionView,
 } from "@/lib/tracking/types";
 
 /**
@@ -80,10 +83,10 @@ function circlePolygon(geofence: Geofence): Feature<Polygon> {
   return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } };
 }
 
-/** South-west and north-east corners around the route and the fence. */
-function boundsOf(locations: LocationView[], geofence: Geofence | null): [LngLat, LngLat] {
+/** South-west and north-east corners around the route and the fences. */
+function boundsOf(locations: LocationView[], fences: Fence[]): [LngLat, LngLat] {
   const corners = locations.map(toLngLat);
-  if (geofence) {
+  for (const { geofence } of fences) {
     const radius = radiusInDegrees(geofence);
     corners.push(
       [geofence.longitude - radius.longitude, geofence.latitude - radius.latitude],
@@ -99,14 +102,39 @@ function boundsOf(locations: LocationView[], geofence: Geofence | null): [LngLat
   ];
 }
 
-type HoveredPoint = Coordinates & { capturedAt: string };
+type HoveredPoint = Coordinates & { capturedAt: string; eta: string | null };
+
+/** One of the session's two fences, with how it is drawn and labelled. */
+type Fence = { target: GeofenceTarget; label: string; color: string; geofence: Geofence };
+
+/**
+ * The fences a session has. A session from before trips can lack either, so
+ * everything below works from this list rather than assuming two.
+ */
+function fencesOf(session: Pick<SessionView, "start" | "destination">): Fence[] {
+  const fences: Fence[] = [];
+  if (session.start) {
+    fences.push({ target: "START", label: "Start", color: "#16a34a", geofence: session.start });
+  }
+  if (session.destination) {
+    fences.push({
+      target: "DESTINATION",
+      label: "Destination",
+      color: "#dc2626",
+      geofence: session.destination,
+    });
+  }
+  return fences;
+}
+
+const TARGET_LABEL: Record<GeofenceTarget, string> = { START: "Start", DESTINATION: "Destination" };
 
 export function SessionMap({
   initial,
-  geofence,
+  session,
 }: {
   initial: LocationsResponse;
-  geofence: Geofence | null;
+  session: SessionView;
 }) {
   const router = useRouter();
   const [locations, setLocations] = useState(initial.locations);
@@ -169,10 +197,12 @@ export function SessionMap({
     };
   }, [sessionId, status, router]);
 
+  const fences = useMemo(() => fencesOf(session), [session]);
   const first = locations.at(0);
   const last = locations.at(-1);
   const lateCount = locations.filter(arrivedLate).length;
-  const center = first ?? geofence;
+  const center = first ?? fences.at(0)?.geofence;
+  const progress = latestProgress(locations, session);
 
   // The dots are a map layer, not DOM elements, so their tooltip is a popup
   // driven by what the pointer is over.
@@ -183,7 +213,13 @@ export function SessionMap({
       return;
     }
     const [longitude, latitude] = feature.geometry.coordinates;
-    setHovered({ longitude, latitude, capturedAt: String(feature.properties?.capturedAt) });
+    const eta = feature.properties?.eta;
+    setHovered({
+      longitude,
+      latitude,
+      capturedAt: String(feature.properties?.capturedAt),
+      eta: typeof eta === "string" ? eta : null,
+    });
   };
 
   return (
@@ -204,8 +240,24 @@ export function SessionMap({
             onMouseLeave={() => setHovered(null)}
             style={{ width: "100%", height: "100%" }}
           >
-            {geofence && <GeofenceCircle geofence={geofence} />}
+            {fences.map((fence) => (
+              <GeofenceCircle key={fence.target} fence={fence} />
+            ))}
             <Route locations={locations} active={status === "ACTIVE"} />
+            {session.destination && (
+              <Marker
+                {...positionOf(session.destination)}
+                anchor="bottom"
+                style={{ zIndex: 1 }}
+              >
+                <span
+                  className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow"
+                  title="Destination"
+                >
+                  Destination
+                </span>
+              </Marker>
+            )}
             {hovered && (
               <Popup
                 longitude={hovered.longitude}
@@ -214,14 +266,19 @@ export function SessionMap({
                 closeOnClick={false}
                 offset={8}
               >
-                <span className="text-xs">
+                <span className="block text-xs">
                   {formatDateTimeSeconds(new Date(hovered.capturedAt))}
                 </span>
+                {hovered.eta && (
+                  <span className="block text-xs text-muted-foreground">
+                    ETA {formatDateTimeSeconds(new Date(hovered.eta))}
+                  </span>
+                )}
               </Popup>
             )}
             <Viewport
               locations={locations}
-              geofence={geofence}
+              fences={fences}
               follow={follow && status === "ACTIVE"}
             />
           </Map>
@@ -248,15 +305,37 @@ export function SessionMap({
               {formatDateTimeSeconds(last ? new Date(last.capturedAt) : null)}
             </Stat>
 
-            {geofence && (
-              <Stat label="Geofence">
-                <GeofenceStatus events={geofenceEvents} />
-                <span className="block text-xs text-muted-foreground">
-                  {formatNumber(geofence.radiusMeters)} m radius ·{" "}
-                  {formatNumber(geofenceEvents.length)} event(s)
-                </span>
-              </Stat>
+            {(session.distanceMeters !== null || progress.eta !== null) && (
+              <>
+                <Stat label="Remaining distance">
+                  {formatDistance(progress.remainingDistanceMeters)}
+                  <span className="block text-xs text-muted-foreground">
+                    of {formatDistance(session.distanceMeters)} planned
+                  </span>
+                </Stat>
+                <Stat label="ETA">
+                  {formatDateTimeSeconds(progress.eta ? new Date(progress.eta) : null)}
+                  <span className="block text-xs text-muted-foreground">
+                    {progress.reportedAt
+                      ? `Reported at ${formatDateTimeSeconds(new Date(progress.reportedAt))}`
+                      : "As planned at Start"}
+                  </span>
+                </Stat>
+              </>
             )}
+
+            {fences.map((fence) => {
+              const events = geofenceEvents.filter((event) => event.target === fence.target);
+              return (
+                <Stat key={fence.target} label={`${fence.label} geofence`}>
+                  <GeofenceStatus events={events} />
+                  <span className="block text-xs text-muted-foreground">
+                    {formatNumber(fence.geofence.radiusMeters)} m radius ·{" "}
+                    {formatNumber(events.length)} event(s)
+                  </span>
+                </Stat>
+              );
+            })}
 
             {status === "ACTIVE" && (
               <>
@@ -282,7 +361,7 @@ export function SessionMap({
       </Card>
 
       <div className="lg:col-span-2">
-        {geofence ? (
+        {fences.length > 0 ? (
           <Tabs defaultValue="points">
             <TabsList>
               <TabsTrigger value="points">
@@ -320,21 +399,22 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
-/** The fence the session was created with. Only drawn — never tested against. */
-function GeofenceCircle({ geofence }: { geofence: Geofence }) {
-  const polygon = useMemo(() => circlePolygon(geofence), [geofence]);
+/** One of the session's fences. Only drawn — never tested against. */
+function GeofenceCircle({ fence }: { fence: Fence }) {
+  const polygon = useMemo(() => circlePolygon(fence.geofence), [fence.geofence]);
+  const id = `geofence-${fence.target.toLowerCase()}`;
 
   return (
-    <Source id="geofence" type="geojson" data={polygon}>
+    <Source id={id} type="geojson" data={polygon}>
       <Layer
-        id="geofence-fill"
+        id={`${id}-fill`}
         type="fill"
-        paint={{ "fill-color": "#7c3aed", "fill-opacity": 0.12 }}
+        paint={{ "fill-color": fence.color, "fill-opacity": 0.12 }}
       />
       <Layer
-        id="geofence-outline"
+        id={`${id}-outline`}
         type="line"
-        paint={{ "line-color": "#7c3aed", "line-opacity": 0.9, "line-width": 2 }}
+        paint={{ "line-color": fence.color, "line-opacity": 0.9, "line-width": 2 }}
       />
     </Source>
   );
@@ -386,7 +466,11 @@ function Route({ locations, active }: { locations: LocationView[]; active: boole
       type: "FeatureCollection",
       features: locations.slice(1, -1).map((location) => ({
         type: "Feature",
-        properties: { capturedAt: location.capturedAt, late: arrivedLate(location) },
+        properties: {
+          capturedAt: location.capturedAt,
+          eta: location.eta,
+          late: arrivedLate(location),
+        },
         geometry: { type: "Point", coordinates: toLngLat(location) },
       })),
     }),
@@ -441,17 +525,17 @@ function Route({ locations, active }: { locations: LocationView[]; active: boole
 const positionOf = ({ longitude, latitude }: Coordinates) => ({ longitude, latitude });
 
 /**
- * Frames the route and the geofence once when either is known, then — only
- * while following — pans to each new current position. It never re-fits after
- * that, so zooming or panning by hand is not undone on the next poll.
+ * Frames the route and the fences once when any is known, then — only while
+ * following — pans to each new current position. It never re-fits after that,
+ * so zooming or panning by hand is not undone on the next poll.
  */
 function Viewport({
   locations,
-  geofence,
+  fences,
   follow,
 }: {
   locations: LocationView[];
-  geofence: Geofence | null;
+  fences: Fence[];
   follow: boolean;
 }) {
   const { current: map } = useMap();
@@ -459,18 +543,18 @@ function Viewport({
   const lastId = locations.at(-1)?.id;
 
   useEffect(() => {
-    if (!map || (locations.length === 0 && !geofence)) return;
+    if (!map || (locations.length === 0 && fences.length === 0)) return;
 
     if (!framed.current) {
       framed.current = true;
 
-      if (locations.length === 1 && !geofence) {
+      if (locations.length === 1 && fences.length === 0) {
         map.jumpTo({ center: toLngLat(locations[0]), zoom: 15 });
         return;
       }
 
       // No animation for the first frame — it should look like the page loaded there.
-      map.fitBounds(boundsOf(locations, geofence), { padding: 48, duration: 0 });
+      map.fitBounds(boundsOf(locations, fences), { padding: 48, duration: 0 });
       return;
     }
 
@@ -506,7 +590,7 @@ function GeofenceEventTable({ events }: { events: GeofenceEventView[] }) {
 
       {rows.length === 0 ? (
         <p className="rounded-xl border p-6 text-sm text-muted-foreground">
-          The device has not reported entering or leaving the geofence yet.
+          The device has not reported entering or leaving a geofence yet.
         </p>
       ) : (
         <div className="rounded-xl border">
@@ -514,6 +598,7 @@ function GeofenceEventTable({ events }: { events: GeofenceEventView[] }) {
             <TableHeader>
               <TableRow>
                 <TableHead>Event</TableHead>
+                <TableHead>Geofence</TableHead>
                 <TableHead>Captured</TableHead>
                 <TableHead>Received</TableHead>
                 <TableHead>Delivery</TableHead>
@@ -527,6 +612,7 @@ function GeofenceEventTable({ events }: { events: GeofenceEventView[] }) {
                       {event.type === "ENTER" ? "Entered" : "Exited"}
                     </Badge>
                   </TableCell>
+                  <TableCell>{TARGET_LABEL[event.target]}</TableCell>
                   <TableCell>{formatDateTimeSeconds(new Date(event.capturedAt))}</TableCell>
                   <TableCell>{formatDateTimeSeconds(new Date(event.receivedAt))}</TableCell>
                   <TableCell className="text-muted-foreground">
@@ -563,6 +649,8 @@ function PointTable({ locations }: { locations: LocationView[] }) {
                 <TableHead>Received</TableHead>
                 <TableHead className="text-right">Latitude</TableHead>
                 <TableHead className="text-right">Longitude</TableHead>
+                <TableHead className="text-right">Remaining</TableHead>
+                <TableHead>ETA</TableHead>
                 <TableHead>Delivery</TableHead>
               </TableRow>
             </TableHeader>
@@ -576,6 +664,12 @@ function PointTable({ locations }: { locations: LocationView[] }) {
                   </TableCell>
                   <TableCell className="text-right font-mono text-xs">
                     {location.longitude.toFixed(6)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {formatDistance(location.remainingDistanceMeters)}
+                  </TableCell>
+                  <TableCell>
+                    {formatDateTimeSeconds(location.eta ? new Date(location.eta) : null)}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {arrivedLate(location) ? "Offline upload" : "Live"}

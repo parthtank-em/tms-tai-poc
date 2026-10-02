@@ -7,7 +7,8 @@ import { parseGeofenceEvents } from "@/lib/tracking/validation";
  * device detected, live or from its offline queue.
  *
  * One endpoint for both: a live crossing is a batch of one, and `isOffline` on
- * each event says which it was. Idempotent on event id, like the bulk
+ * each event says which it was. `target` says which fence was crossed — START
+ * or DESTINATION. Idempotent on event id, like the bulk
  * locations endpoint, so a batch whose response was lost can be resent as is.
  */
 export async function POST(
@@ -23,7 +24,10 @@ export async function POST(
   if (result.outcome === "not_found") return sessionNotFound();
   if (result.outcome === "no_geofence") {
     return Response.json(
-      { success: false, error: "This tracking session was started without a geofence." },
+      {
+        success: false,
+        error: `This tracking session has no ${result.target === "START" ? "start" : "destination"} geofence.`,
+      },
       { status: 409 },
     );
   }

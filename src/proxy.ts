@@ -32,5 +32,6 @@ export const config = {
     "/fmcsa/:path*",
     "/platelookup/:path*",
     "/tracking/:path*",
+    "/radar-tracking/:path*",
   ],
 };

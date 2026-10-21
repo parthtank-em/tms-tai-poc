@@ -854,3 +854,123 @@ model TrackingGeofenceEvent {
   @@index([sessionId, receivedAt])
   @@map("tracking_geofence_events")
 }
+
+// ---------------------------------------------------------------------------
+// Radar geofencing
+//
+// docs/radar-tracking-poc.md. Independent of the tracking models above: Radar
+// decides inside/outside and computes the ETA, and nothing here is read or
+// written by the /tracking POC.
+// ---------------------------------------------------------------------------
+
+/// Our own lifecycle: ACTIVE until Stop, whatever Radar says about the trip.
+enum RadarTripLifecycle {
+  ACTIVE
+  COMPLETED
+}
+
+/// Radar's trip status, as last reported by a webhook.
+enum RadarTripStatus {
+  PENDING
+  STARTED
+  APPROACHING
+  ARRIVED
+  COMPLETED
+  CANCELED
+  EXPIRED
+}
+
+enum RadarGeofenceTarget {
+  START
+  DESTINATION
+}
+
+/// One trip. The id doubles as the Radar trip's `externalId` and as the
+/// `externalId` of both Radar geofences, so a webhook names its trip directly.
+model RadarTrip {
+  id        String             @id @default(uuid())
+  /// Also the Radar `userId` — the SDK is told `Radar.setUserId(deviceId)`.
+  deviceId  String             @map("device_id")
+  status    RadarTripLifecycle @default(ACTIVE)
+  startedAt DateTime           @default(now()) @map("started_at")
+  endedAt   DateTime?          @map("ended_at")
+
+  startLatitude           Decimal @db.Decimal(10, 7) @map("start_latitude")
+  startLongitude          Decimal @db.Decimal(10, 7) @map("start_longitude")
+  startRadiusMeters       Int     @map("start_radius_meters")
+  destinationLatitude     Decimal @db.Decimal(10, 7) @map("destination_latitude")
+  destinationLongitude    Decimal @db.Decimal(10, 7) @map("destination_longitude")
+  destinationRadiusMeters Int     @map("destination_radius_meters")
+
+  /// Radar's own id for the trip, from the create response.
+  radarTripId String?          @map("radar_trip_id")
+  tripStatus  RadarTripStatus? @map("trip_status")
+  /// Radar's latest ETA. `radarUpdatedAt` is the `actualCreatedAt` of the
+  /// event that set `tripStatus` and the ETA — a webhook only overwrites the
+  /// three with a newer event, so a replayed offline event cannot roll them back.
+  etaMinutes        Float?    @map("eta_minutes")
+  etaDistanceMeters Int?      @map("eta_distance_meters")
+  radarUpdatedAt    DateTime? @map("radar_updated_at")
+  /// First exit from the start fence and first arrival, from events.
+  departedAt DateTime? @map("departed_at")
+  arrivedAt  DateTime? @map("arrived_at")
+
+  /// The last Radar API call that failed, shown on the trip page. Cleared on success.
+  radarSyncError String? @map("radar_sync_error")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  locations RadarTripLocation[]
+  events    RadarEvent[]
+
+  @@index([deviceId, startedAt])
+  @@index([status])
+  @@map("radar_trips")
+}
+
+/// The route line: every location the phone forwards from the Radar SDK.
+/// The id is generated on the device, so a retried batch is skipped.
+model RadarTripLocation {
+  id         String    @id
+  tripId     String    @map("trip_id")
+  trip       RadarTrip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  latitude   Decimal   @db.Decimal(10, 7)
+  longitude  Decimal   @db.Decimal(10, 7)
+  accuracy   Float?
+  capturedAt DateTime  @map("captured_at")
+  receivedAt DateTime  @default(now()) @map("received_at")
+
+  @@index([tripId, capturedAt])
+  @@index([tripId, receivedAt])
+  @@map("radar_trip_locations")
+}
+
+/// A Radar event that belongs to a trip, as delivered by webhook. The id is
+/// Radar's `_id`, so a redelivered webhook is skipped rather than stored twice.
+model RadarEvent {
+  id     String    @id
+  tripId String    @map("trip_id")
+  trip   RadarTrip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  /// Radar's event type verbatim, e.g. `user.entered_geofence`.
+  type   String
+  /// Which fence, for geofence events. Null for trip events.
+  target RadarGeofenceTarget?
+
+  latitude   Decimal? @db.Decimal(10, 7)
+  longitude  Decimal? @db.Decimal(10, 7)
+  accuracy   Float?
+  /// Radar's confidence: 1 low, 2 medium, 3 high.
+  confidence Int?
+
+  /// When Radar processed it. For a replayed offline location this is after
+  /// `actualCreatedAt`, which is when it happened on the device.
+  createdAt       DateTime @map("created_at")
+  actualCreatedAt DateTime @map("actual_created_at")
+  receivedAt      DateTime @default(now()) @map("received_at")
+  payload         Json
+
+  @@index([tripId, actualCreatedAt])
+  @@index([tripId, receivedAt])
+  @@map("radar_events")
+}

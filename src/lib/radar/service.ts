@@ -1,0 +1,449 @@
+import { prisma } from "@/lib/prisma";
+
+import { createTrip, deleteGeofence, updateTripStatus, upsertGeofence } from "./client";
+import { getRadarConfig } from "./config";
+import { tripUpdates, type MappedEvent } from "./mapper";
+import {
+  RADAR_TRIP_STATUSES,
+  type LocationInput,
+  type RadarEventView,
+  type RadarFeed,
+  type RadarLocationView,
+  type RadarTripView,
+} from "./types";
+import type { StartTripInput } from "./validation";
+
+/**
+ * Radar trip persistence and the Radar calls that go with it. The route
+ * handlers parse and respond; everything that touches the database or Radar
+ * lives here.
+ */
+
+type DecimalLike = { toString(): string };
+
+const toNumber = (value: DecimalLike) => Number(value.toString());
+const toNullableNumber = (value: DecimalLike | null) => (value ? toNumber(value) : null);
+
+const TRIP_SELECT = {
+  id: true,
+  deviceId: true,
+  status: true,
+  tripStatus: true,
+  startedAt: true,
+  endedAt: true,
+  startLatitude: true,
+  startLongitude: true,
+  startRadiusMeters: true,
+  destinationLatitude: true,
+  destinationLongitude: true,
+  destinationRadiusMeters: true,
+  etaMinutes: true,
+  etaDistanceMeters: true,
+  radarUpdatedAt: true,
+  departedAt: true,
+  arrivedAt: true,
+  radarSyncError: true,
+  _count: { select: { locations: true, events: true } },
+} as const;
+
+type TripRow = {
+  id: string;
+  deviceId: string;
+  status: RadarTripView["status"];
+  tripStatus: RadarTripView["tripStatus"];
+  startedAt: Date;
+  endedAt: Date | null;
+  startLatitude: DecimalLike;
+  startLongitude: DecimalLike;
+  startRadiusMeters: number;
+  destinationLatitude: DecimalLike;
+  destinationLongitude: DecimalLike;
+  destinationRadiusMeters: number;
+  etaMinutes: number | null;
+  etaDistanceMeters: number | null;
+  radarUpdatedAt: Date | null;
+  departedAt: Date | null;
+  arrivedAt: Date | null;
+  radarSyncError: string | null;
+  _count: { locations: number; events: number };
+};
+
+function toTripView(row: TripRow): RadarTripView {
+  return {
+    id: row.id,
+    deviceId: row.deviceId,
+    status: row.status,
+    tripStatus: row.tripStatus,
+    startedAt: row.startedAt.toISOString(),
+    endedAt: row.endedAt?.toISOString() ?? null,
+    start: {
+      latitude: toNumber(row.startLatitude),
+      longitude: toNumber(row.startLongitude),
+      radiusMeters: row.startRadiusMeters,
+    },
+    destination: {
+      latitude: toNumber(row.destinationLatitude),
+      longitude: toNumber(row.destinationLongitude),
+      radiusMeters: row.destinationRadiusMeters,
+    },
+    eta:
+      row.etaMinutes === null
+        ? null
+        : { minutes: row.etaMinutes, distanceMeters: row.etaDistanceMeters },
+    radarUpdatedAt: row.radarUpdatedAt?.toISOString() ?? null,
+    departedAt: row.departedAt?.toISOString() ?? null,
+    arrivedAt: row.arrivedAt?.toISOString() ?? null,
+    radarSyncError: row.radarSyncError,
+    locationCount: row._count.locations,
+    eventCount: row._count.events,
+  };
+}
+
+export type StartTripResult =
+  | { outcome: "started"; trip: RadarTripView }
+  | { outcome: "unconfigured" }
+  | { outcome: "radar_failed"; message: string };
+
+/**
+ * Creates the trip here and in Radar: both fences, then the Radar trip.
+ *
+ * All or nothing. If any Radar call fails the row and whatever fences were
+ * created are removed again, so the phone never tracks a trip Radar does not
+ * know about. Every press of Start is a new trip — nothing is resumed.
+ */
+export async function startTrip(input: StartTripInput): Promise<StartTripResult> {
+  const config = getRadarConfig();
+  if (!config) return { outcome: "unconfigured" };
+
+  const { deviceId, start, destination } = input;
+
+  const { id } = await prisma.radarTrip.create({
+    data: {
+      deviceId,
+      startLatitude: start.latitude,
+      startLongitude: start.longitude,
+      startRadiusMeters: start.radiusMeters,
+      destinationLatitude: destination.latitude,
+      destinationLongitude: destination.longitude,
+      destinationRadiusMeters: destination.radiusMeters,
+    },
+    select: { id: true },
+  });
+
+  const fail = async (message: string): Promise<StartTripResult> => {
+    // Best effort: a fence that was never created just 404s.
+    await Promise.all([deleteGeofence(config, id, "START"), deleteGeofence(config, id, "DESTINATION")]);
+    await prisma.radarTrip.delete({ where: { id } });
+    return { outcome: "radar_failed", message };
+  };
+
+  const fences = await Promise.all([
+    upsertGeofence(config, id, "START", start, deviceId),
+    upsertGeofence(config, id, "DESTINATION", destination, deviceId),
+  ]);
+  const fenceError = fences.find((result) => !result.ok);
+  if (fenceError && !fenceError.ok) return fail(fenceError.message);
+
+  // The destination fence must exist before the trip that points at it.
+  const radarTrip = await createTrip(config, id, deviceId);
+  if (!radarTrip.ok) return fail(radarTrip.message);
+
+  const trip = await prisma.radarTrip.update({
+    where: { id },
+    data: {
+      radarTripId: radarTrip.data._id,
+      tripStatus: statusFromRadar(radarTrip.data.status ?? ""),
+    },
+    select: TRIP_SELECT,
+  });
+
+  return { outcome: "started", trip: toTripView(trip) };
+}
+
+function statusFromRadar(status: string): RadarTripView["tripStatus"] {
+  const upper = status.toUpperCase();
+  return RADAR_TRIP_STATUSES.find((value) => value === upper) ?? null;
+}
+
+export async function listTrips(): Promise<RadarTripView[]> {
+  const trips = await prisma.radarTrip.findMany({
+    orderBy: { startedAt: "desc" },
+    select: TRIP_SELECT,
+  });
+
+  return trips.map(toTripView);
+}
+
+export async function findTrip(tripId: string): Promise<RadarTripView | null> {
+  const trip = await prisma.radarTrip.findUnique({ where: { id: tripId }, select: TRIP_SELECT });
+  return trip ? toTripView(trip) : null;
+}
+
+/**
+ * Stores route points, skipping any id already stored. One location is a batch
+ * of one, so a retried single send is as idempotent as a retried batch.
+ *
+ * A COMPLETED trip still accepts points: a phone that pressed Stop while
+ * offline flushes its queue afterwards, and those points are still the route.
+ */
+export async function recordLocations(
+  tripId: string,
+  locations: LocationInput[],
+): Promise<{ found: false } | { found: true; inserted: number }> {
+  const trip = await prisma.radarTrip.findUnique({ where: { id: tripId }, select: { id: true } });
+  if (!trip) return { found: false };
+
+  const { count } = await prisma.radarTripLocation.createMany({
+    data: locations.map((location) => ({ ...location, tripId })),
+    skipDuplicates: true,
+  });
+
+  return { found: true, inserted: count };
+}
+
+export type StopResult =
+  | { outcome: "stopped"; trip: RadarTripView }
+  | { outcome: "not_found" }
+  | { outcome: "not_active"; trip: RadarTripView };
+
+/**
+ * Ends the trip here, completes it in Radar and deletes both fences.
+ *
+ * The stop itself never fails on Radar's account: the phone needs a definite
+ * answer, and a Radar trip left open simply expires. A failed Radar call is
+ * kept in `radarSyncError` for the trip page instead.
+ */
+export async function stopTrip(tripId: string): Promise<StopResult> {
+  // The status condition sits in the write itself, so two racing Stops cannot
+  // both succeed.
+  const { count } = await prisma.radarTrip.updateMany({
+    where: { id: tripId, status: "ACTIVE" },
+    data: { status: "COMPLETED", endedAt: new Date() },
+  });
+
+  if (count === 1) await closeRadarTrip(tripId);
+
+  const trip = await findTrip(tripId);
+
+  if (!trip) return { outcome: "not_found" };
+  return count === 1 ? { outcome: "stopped", trip } : { outcome: "not_active", trip };
+}
+
+const FINAL_STATUSES = new Set(["COMPLETED", "CANCELED", "EXPIRED"]);
+
+async function closeRadarTrip(tripId: string): Promise<void> {
+  const config = getRadarConfig();
+  if (!config) {
+    await prisma.radarTrip.update({
+      where: { id: tripId },
+      data: { radarSyncError: "Radar is not configured — trip and fences were left open in Radar." },
+    });
+    return;
+  }
+
+  const current = await prisma.radarTrip.findUnique({
+    where: { id: tripId },
+    select: { tripStatus: true },
+  });
+
+  const alreadyClosed = current?.tripStatus ? FINAL_STATUSES.has(current.tripStatus) : false;
+
+  const [trip, ...fences] = await Promise.all([
+    alreadyClosed
+      ? Promise.resolve({ ok: true as const, data: null })
+      : updateTripStatus(config, tripId, "completed"),
+    deleteGeofence(config, tripId, "START"),
+    deleteGeofence(config, tripId, "DESTINATION"),
+  ]);
+
+  const errors = [trip, ...fences].flatMap((result) => (result.ok ? [] : [result.message]));
+  const now = new Date();
+
+  await prisma.radarTrip.update({
+    where: { id: tripId },
+    data: {
+      radarSyncError: errors.length > 0 ? errors.join("\n") : null,
+      // Radar will also say so by webhook, but the page should not wait on it.
+      ...(trip.ok && !alreadyClosed ? { tripStatus: "COMPLETED", radarUpdatedAt: now } : {}),
+    },
+  });
+}
+
+/**
+ * Everything the trip page needs for one poll.
+ *
+ * With `after`, only rows **received** at or after it — an offline batch or a
+ * replayed Radar event lands late with an old timestamp, and filtering on
+ * capture time would never return it. The comparison is `>=` so rows written
+ * in the cursor's millisecond are not skipped; the client drops the overlap by
+ * id.
+ */
+export async function getFeed(tripId: string, after: Date | null): Promise<RadarFeed | null> {
+  const trip = await findTrip(tripId);
+  if (!trip) return null;
+
+  const where = { tripId, ...(after ? { receivedAt: { gte: after } } : {}) };
+
+  const [locationRows, eventRows] = await Promise.all([
+    prisma.radarTripLocation.findMany({
+      where,
+      orderBy: [{ capturedAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        latitude: true,
+        longitude: true,
+        accuracy: true,
+        capturedAt: true,
+        receivedAt: true,
+      },
+    }),
+    prisma.radarEvent.findMany({
+      where,
+      orderBy: [{ actualCreatedAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        type: true,
+        target: true,
+        latitude: true,
+        longitude: true,
+        confidence: true,
+        createdAt: true,
+        actualCreatedAt: true,
+        receivedAt: true,
+      },
+    }),
+  ]);
+
+  const locations: RadarLocationView[] = locationRows.map((row) => ({
+    id: row.id,
+    latitude: toNumber(row.latitude),
+    longitude: toNumber(row.longitude),
+    accuracy: row.accuracy,
+    capturedAt: row.capturedAt.toISOString(),
+    receivedAt: row.receivedAt.toISOString(),
+  }));
+
+  const events: RadarEventView[] = eventRows.map((row) => ({
+    id: row.id,
+    type: row.type,
+    target: row.target,
+    latitude: toNullableNumber(row.latitude),
+    longitude: toNullableNumber(row.longitude),
+    confidence: row.confidence,
+    createdAt: row.createdAt.toISOString(),
+    actualCreatedAt: row.actualCreatedAt.toISOString(),
+    receivedAt: row.receivedAt.toISOString(),
+  }));
+
+  const latestReceived = [...locationRows, ...eventRows].reduce<Date | null>(
+    (latest, row) => (!latest || row.receivedAt > latest ? row.receivedAt : latest),
+    null,
+  );
+
+  return {
+    trip,
+    locations,
+    events,
+    cursor: (latestReceived ?? after)?.toISOString() ?? null,
+  };
+}
+
+export type IngestResult = { stored: number; unknownTrip: number; wrongUser: number };
+
+/**
+ * Stores webhook events and moves each trip's state forward.
+ *
+ * Idempotent: events are keyed on Radar's `_id`, and the trip updates are
+ * "newest wins" (status, ETA) and "earliest wins" (departed, arrived) against
+ * what is already stored — so a redelivery, or two deliveries racing, end in
+ * the same state.
+ *
+ * An event whose user is not the trip's device is dropped. The fences are
+ * scoped to that device, so this should not happen; it is a backstop.
+ */
+export async function ingestEvents(events: MappedEvent[]): Promise<IngestResult> {
+  if (events.length === 0) return { stored: 0, unknownTrip: 0, wrongUser: 0 };
+
+  const tripIds = [...new Set(events.map((event) => event.tripId))];
+  const trips = await prisma.radarTrip.findMany({
+    where: { id: { in: tripIds } },
+    select: { id: true, deviceId: true },
+  });
+  const deviceOf = new Map(trips.map((trip) => [trip.id, trip.deviceId]));
+
+  let unknownTrip = 0;
+  let wrongUser = 0;
+
+  const accepted = events.filter((event) => {
+    const deviceId = deviceOf.get(event.tripId);
+    if (deviceId === undefined) {
+      unknownTrip++;
+      return false;
+    }
+    if (event.userId !== null && event.userId !== deviceId) {
+      wrongUser++;
+      return false;
+    }
+    return true;
+  });
+
+  const { count } = await prisma.radarEvent.createMany({
+    data: accepted.map((event) => ({
+      id: event.id,
+      tripId: event.tripId,
+      type: event.type,
+      target: event.target,
+      latitude: event.latitude,
+      longitude: event.longitude,
+      accuracy: event.accuracy,
+      confidence: event.confidence,
+      createdAt: event.createdAt,
+      actualCreatedAt: event.actualCreatedAt,
+      payload: event.payload as object,
+    })),
+    skipDuplicates: true,
+  });
+
+  for (const [tripId, update] of tripUpdates(accepted)) {
+    const writes = [];
+
+    if (update.latest) {
+      const { at, status, etaMinutes, etaDistanceMeters } = update.latest;
+      writes.push(
+        prisma.radarTrip.updateMany({
+          where: { id: tripId, OR: [{ radarUpdatedAt: null }, { radarUpdatedAt: { lt: at } }] },
+          data: {
+            radarUpdatedAt: at,
+            ...(status ? { tripStatus: status } : {}),
+            // A trip event without an ETA (e.g. arrived) keeps the last one.
+            ...(etaMinutes !== null ? { etaMinutes, etaDistanceMeters } : {}),
+          },
+        }),
+      );
+    }
+
+    if (update.departedAt) {
+      const at = update.departedAt;
+      writes.push(
+        prisma.radarTrip.updateMany({
+          where: { id: tripId, OR: [{ departedAt: null }, { departedAt: { gt: at } }] },
+          data: { departedAt: at },
+        }),
+      );
+    }
+
+    if (update.arrivedAt) {
+      const at = update.arrivedAt;
+      writes.push(
+        prisma.radarTrip.updateMany({
+          where: { id: tripId, OR: [{ arrivedAt: null }, { arrivedAt: { gt: at } }] },
+          data: { arrivedAt: at },
+        }),
+      );
+    }
+
+    await Promise.all(writes);
+  }
+
+  return { stored: count, unknownTrip, wrongUser };
+}

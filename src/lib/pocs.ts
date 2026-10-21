@@ -44,10 +44,11 @@ export const pocs: Poc[] = [
     description: "Tracking sessions from the mobile app, with live and historical routes on a map.",
     href: "/tracking",
   },
-  {
-    title: "Radar Geofencing",
-    shortTitle: "Radar",
-    description: "Trips tracked with the Radar SDK: geofence events, trip status and ETA on a map.",
-    href: "/radar-tracking",
-  },
+  // Hidden for now — still reachable by URL at /radar-tracking.
+  // {
+  //   title: "Radar Geofencing",
+  //   shortTitle: "Radar",
+  //   description: "Trips tracked with the Radar SDK: geofence events, trip status and ETA on a map.",
+  //   href: "/radar-tracking",
+  // },
 ];

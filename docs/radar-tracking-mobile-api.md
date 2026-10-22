@@ -1,6 +1,6 @@
 # Radar Geofencing — Mobile Integration Guide
 
-For developers building the mobile app against the **Radar POC** (`/radar-tracking`). This is separate from the Mapbox tracking POC described in [geo-location-tracking-mobile-api.md](./geo-location-tracking-mobile-api.md); the two share no endpoints or data.
+For developers building the mobile app against the **Radar POC** (`/radar-tracking`). This is separate from the geolocation tracking POC described in [geo-location-tracking-mobile-api.md](./geo-location-tracking-mobile-api.md); the two share no endpoints or data.
 
 Design background: [radar-tracking-poc.md](./radar-tracking-poc.md).
 

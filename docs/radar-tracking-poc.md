@@ -1,6 +1,6 @@
 # Radar Geofencing POC — Design
 
-An independent POC that evaluates [Radar](https://radar.com) for trip tracking: geofence entry/exit, trip status (started → approaching → arrived) and ETA. It runs **alongside** the existing Mapbox tracking POC (`/tracking`) and shares nothing with it except the console login, the Mapbox token used to draw the map, and the generic UI components.
+An independent POC that evaluates [Radar](https://radar.com) for trip tracking: geofence entry/exit, trip status (started → approaching → arrived) and ETA. It runs **alongside** the existing geolocation tracking POC (`/tracking`) and shares nothing with it except the console login, the Google Maps key used to draw the map, and the generic UI components.
 
 Mobile API reference: [radar-tracking-mobile-api.md](./radar-tracking-mobile-api.md).
 

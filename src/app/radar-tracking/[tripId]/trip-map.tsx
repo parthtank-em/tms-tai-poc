@@ -1,12 +1,17 @@
 "use client";
 
-import "mapbox-gl/dist/mapbox-gl.css";
-
-import type { Feature, FeatureCollection, LineString, Point, Polygon } from "geojson";
+import {
+  AdvancedMarker,
+  APIProvider,
+  Circle,
+  InfoWindow,
+  Map,
+  Pin,
+  Polyline,
+  useMap,
+} from "@vis.gl/react-google-maps";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Layer, Map, Marker, Popup, Source, useMap } from "react-map-gl/mapbox";
-import type { MapMouseEvent } from "react-map-gl/mapbox";
 
 import { RadarTripStatusBadge, TripLifecycleBadge } from "@/components/radar-tracking/trip-badges";
 import { Badge } from "@/components/ui/badge";
@@ -50,26 +55,24 @@ import type {
 
 const POLL_INTERVAL_MS = 5_000;
 
-const ACCESS_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
+const API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
-const MAP_STYLE =
-  process.env.NEXT_PUBLIC_MAPBOX_STYLE_URL || "mapbox://styles/mapbox/streets-v12";
+/** Advanced markers need a map ID; Google's demo ID works until a real one is set. */
+const MAP_ID = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID";
+
+/** Beyond this, per-point dots cost more in DOM than they add in clarity. */
+const MAX_POINT_MARKERS = 300;
 
 const TABLE_ROWS = 25;
 
-const POINTS_LAYER_ID = "radar-route-points";
-
 const METERS_PER_DEGREE_LATITUDE = 111_320;
 
-const CIRCLE_STEPS = 64;
-
-type LngLat = [longitude: number, latitude: number];
 type Coordinates = { latitude: number; longitude: number };
 
-// Mapbox and GeoJSON put longitude first — the reverse of how the data reads.
-const toLngLat = (point: Coordinates): LngLat => [point.longitude, point.latitude];
-
-const positionOf = ({ longitude, latitude }: Coordinates) => ({ longitude, latitude });
+const toLatLng = ({ latitude, longitude }: Coordinates): google.maps.LatLngLiteral => ({
+  lat: latitude,
+  lng: longitude,
+});
 
 function radiusInDegrees(geofence: Geofence) {
   const latitude = geofence.radiusMeters / METERS_PER_DEGREE_LATITUDE;
@@ -77,39 +80,26 @@ function radiusInDegrees(geofence: Geofence) {
   return { latitude, longitude };
 }
 
-/** Mapbox has no metre-radius circle, so the fence is drawn as a polygon. */
-function circlePolygon(geofence: Geofence): Feature<Polygon> {
-  const radius = radiusInDegrees(geofence);
-  const ring: LngLat[] = Array.from({ length: CIRCLE_STEPS }, (_, step) => {
-    const angle = (step / CIRCLE_STEPS) * 2 * Math.PI;
-    return [
-      geofence.longitude + radius.longitude * Math.cos(angle),
-      geofence.latitude + radius.latitude * Math.sin(angle),
-    ];
-  });
-  ring.push(ring[0]);
-
-  return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } };
-}
-
 type Fence = { target: RadarGeofenceTarget; label: string; color: string; geofence: Geofence };
 
-function boundsOf(locations: RadarLocationView[], fences: Fence[]): [LngLat, LngLat] {
-  const corners = locations.map(toLngLat);
+function boundsOf(
+  locations: RadarLocationView[],
+  fences: Fence[],
+): google.maps.LatLngBoundsLiteral {
+  const latitudes = locations.map((location) => location.latitude);
+  const longitudes = locations.map((location) => location.longitude);
   for (const { geofence } of fences) {
     const radius = radiusInDegrees(geofence);
-    corners.push(
-      [geofence.longitude - radius.longitude, geofence.latitude - radius.latitude],
-      [geofence.longitude + radius.longitude, geofence.latitude + radius.latitude],
-    );
+    latitudes.push(geofence.latitude - radius.latitude, geofence.latitude + radius.latitude);
+    longitudes.push(geofence.longitude - radius.longitude, geofence.longitude + radius.longitude);
   }
 
-  const longitudes = corners.map(([longitude]) => longitude);
-  const latitudes = corners.map(([, latitude]) => latitude);
-  return [
-    [Math.min(...longitudes), Math.min(...latitudes)],
-    [Math.max(...longitudes), Math.max(...latitudes)],
-  ];
+  return {
+    south: Math.min(...latitudes),
+    west: Math.min(...longitudes),
+    north: Math.max(...latitudes),
+    east: Math.max(...longitudes),
+  };
 }
 
 type Hovered = Coordinates & { capturedAt: string; accuracy: number | null };
@@ -208,105 +198,93 @@ export function TripMap({ initial }: { initial: RadarFeed }) {
   const center = locations.at(0) ?? trip.start;
   const arrival = arrivalTime(trip);
 
-  const onMouseMove = (event: MapMouseEvent) => {
-    const feature = event.features?.[0];
-    if (!feature || feature.geometry.type !== "Point") {
-      setHovered(null);
-      return;
-    }
-    const [longitude, latitude] = feature.geometry.coordinates;
-    const accuracy = feature.properties?.accuracy;
-    setHovered({
-      longitude,
-      latitude,
-      capturedAt: String(feature.properties?.capturedAt),
-      accuracy: typeof accuracy === "number" ? accuracy : null,
-    });
-  };
-
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_18rem]">
       <div className="h-[32rem] overflow-hidden rounded-xl border bg-muted">
-        {ACCESS_TOKEN ? (
-          <Map
-            mapboxAccessToken={ACCESS_TOKEN}
-            mapStyle={MAP_STYLE}
-            initialViewState={{ longitude: center.longitude, latitude: center.latitude, zoom: 14 }}
-            interactiveLayerIds={[POINTS_LAYER_ID]}
-            cursor={hovered ? "pointer" : undefined}
-            onMouseMove={onMouseMove}
-            onMouseLeave={() => setHovered(null)}
-            style={{ width: "100%", height: "100%" }}
-          >
-            {fences.map((fence) => (
-              <GeofenceCircle key={fence.target} fence={fence} />
-            ))}
-            <Route locations={locations} active={status === "ACTIVE"} />
+        {API_KEY ? (
+          <APIProvider apiKey={API_KEY}>
+            <Map
+              mapId={MAP_ID}
+              defaultCenter={toLatLng(center)}
+              defaultZoom={14}
+              gestureHandling="greedy"
+              disableDefaultUI
+              zoomControl
+              style={{ width: "100%", height: "100%" }}
+            >
+              {fences.map((fence) => (
+                <GeofenceCircle key={fence.target} fence={fence} />
+              ))}
+              <Route locations={locations} active={status === "ACTIVE"} onHover={setHovered} />
 
-            <Marker {...positionOf(trip.destination)} anchor="bottom" style={{ zIndex: 1 }}>
-              <span className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow">
-                Destination
-              </span>
-            </Marker>
+              <AdvancedMarker position={toLatLng(trip.destination)} zIndex={1}>
+                <span className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow">
+                  Destination
+                </span>
+              </AdvancedMarker>
 
-            {milestones.map((event) => (
-              <Marker
-                key={event.id}
-                longitude={event.longitude!}
-                latitude={event.latitude!}
-                style={{ zIndex: 3 }}
-                onClick={(click) => {
-                  click.originalEvent.stopPropagation();
-                  setSelectedEvent(event);
-                }}
-              >
-                <span
-                  className={`block size-3.5 cursor-pointer rotate-45 border-2 border-white shadow ${eventColor(event)}`}
+              {milestones.map((event) => (
+                <AdvancedMarker
+                  key={event.id}
+                  position={{ lat: event.latitude!, lng: event.longitude! }}
+                  anchorLeft="-50%"
+                  anchorTop="-50%"
+                  zIndex={3}
                   title={eventLabel(event)}
-                />
-              </Marker>
-            ))}
+                  onClick={() => setSelectedEvent(event)}
+                >
+                  <span
+                    className={`block size-3.5 rotate-45 border-2 border-white shadow ${eventColor(event)}`}
+                  />
+                </AdvancedMarker>
+              ))}
 
-            {selectedEvent && selectedEvent.latitude !== null && selectedEvent.longitude !== null && (
-              <Popup
-                longitude={selectedEvent.longitude}
-                latitude={selectedEvent.latitude}
-                offset={10}
-                onClose={() => setSelectedEvent(null)}
-              >
-                <span className="block text-xs font-medium">{eventLabel(selectedEvent)}</span>
-                <span className="block text-xs">
-                  {formatDateTimeSeconds(new Date(selectedEvent.actualCreatedAt))}
-                </span>
-                {selectedEvent.confidence !== null && (
-                  <span className="block text-xs text-muted-foreground">
-                    Confidence {selectedEvent.confidence}/3
-                  </span>
+              {selectedEvent &&
+                selectedEvent.latitude !== null &&
+                selectedEvent.longitude !== null && (
+                  <InfoWindow
+                    position={{ lat: selectedEvent.latitude, lng: selectedEvent.longitude }}
+                    pixelOffset={[0, -10]}
+                    onCloseClick={() => setSelectedEvent(null)}
+                  >
+                    <span className="block text-xs font-medium">{eventLabel(selectedEvent)}</span>
+                    <span className="block text-xs">
+                      {formatDateTimeSeconds(new Date(selectedEvent.actualCreatedAt))}
+                    </span>
+                    {selectedEvent.confidence !== null && (
+                      <span className="block text-xs text-muted-foreground">
+                        Confidence {selectedEvent.confidence}/3
+                      </span>
+                    )}
+                  </InfoWindow>
                 )}
-              </Popup>
-            )}
 
-            {hovered && (
-              <Popup
-                longitude={hovered.longitude}
-                latitude={hovered.latitude}
-                closeButton={false}
-                closeOnClick={false}
-                offset={8}
-              >
-                <span className="block text-xs">
-                  {formatDateTimeSeconds(new Date(hovered.capturedAt))}
-                </span>
-                {hovered.accuracy !== null && (
-                  <span className="block text-xs text-muted-foreground">
-                    ±{Math.round(hovered.accuracy)} m
+              {hovered && (
+                <InfoWindow
+                  position={toLatLng(hovered)}
+                  headerDisabled
+                  disableAutoPan
+                  shouldFocus={false}
+                  pixelOffset={[0, -8]}
+                >
+                  <span className="block text-xs">
+                    {formatDateTimeSeconds(new Date(hovered.capturedAt))}
                   </span>
-                )}
-              </Popup>
-            )}
+                  {hovered.accuracy !== null && (
+                    <span className="block text-xs text-muted-foreground">
+                      ±{Math.round(hovered.accuracy)} m
+                    </span>
+                  )}
+                </InfoWindow>
+              )}
 
-            <Viewport locations={locations} fences={fences} follow={follow && status === "ACTIVE"} />
-          </Map>
+              <Viewport
+                locations={locations}
+                fences={fences}
+                follow={follow && status === "ACTIVE"}
+              />
+            </Map>
+          </APIProvider>
         ) : (
           <MissingKey />
         )}
@@ -417,94 +395,92 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
 }
 
 function GeofenceCircle({ fence }: { fence: Fence }) {
-  const polygon = useMemo(() => circlePolygon(fence.geofence), [fence.geofence]);
-  const id = `radar-geofence-${fence.target.toLowerCase()}`;
-
   return (
-    <Source id={id} type="geojson" data={polygon}>
-      <Layer id={`${id}-fill`} type="fill" paint={{ "fill-color": fence.color, "fill-opacity": 0.12 }} />
-      <Layer
-        id={`${id}-outline`}
-        type="line"
-        paint={{ "line-color": fence.color, "line-opacity": 0.9, "line-width": 2 }}
-      />
-    </Source>
+    <Circle
+      center={toLatLng(fence.geofence)}
+      radius={fence.geofence.radiusMeters}
+      fillColor={fence.color}
+      fillOpacity={0.12}
+      strokeColor={fence.color}
+      strokeOpacity={0.9}
+      strokeWeight={2}
+      clickable={false}
+      zIndex={1}
+    />
   );
 }
 
 /** The line, the per-point dots, and the start / current-or-end markers. */
-function Route({ locations, active }: { locations: RadarLocationView[]; active: boolean }) {
+function Route({
+  locations,
+  active,
+  onHover,
+}: {
+  locations: RadarLocationView[];
+  active: boolean;
+  onHover: (point: Hovered | null) => void;
+}) {
   const first = locations.at(0);
   const last = locations.at(-1);
-
-  // Both sources stay mounted even when empty, so the layers keep their order.
-  const line = useMemo<FeatureCollection<LineString>>(
-    () => ({
-      type: "FeatureCollection",
-      features:
-        locations.length < 2
-          ? []
-          : [
-              {
-                type: "Feature",
-                properties: {},
-                geometry: { type: "LineString", coordinates: locations.map(toLngLat) },
-              },
-            ],
-    }),
-    [locations],
-  );
-
-  const dots = useMemo<FeatureCollection<Point>>(
-    () => ({
-      type: "FeatureCollection",
-      features: locations.slice(1, -1).map((location) => ({
-        type: "Feature",
-        properties: { capturedAt: location.capturedAt, accuracy: location.accuracy },
-        geometry: { type: "Point", coordinates: toLngLat(location) },
-      })),
-    }),
-    [locations],
-  );
+  const path = useMemo(() => locations.map(toLatLng), [locations]);
 
   return (
     <>
-      <Source id="radar-route-line" type="geojson" data={line}>
-        <Layer
-          id="radar-route-line"
-          type="line"
-          layout={{ "line-join": "round", "line-cap": "round" }}
-          paint={{ "line-color": "#7c3aed", "line-opacity": 0.85, "line-width": 4 }}
-        />
-      </Source>
+      <Polyline
+        path={path}
+        strokeColor="#7c3aed"
+        strokeOpacity={0.85}
+        strokeWeight={4}
+        clickable={false}
+        zIndex={2}
+      />
 
-      <Source id={POINTS_LAYER_ID} type="geojson" data={dots}>
-        <Layer
-          id={POINTS_LAYER_ID}
-          type="circle"
-          paint={{
-            "circle-radius": 4,
-            "circle-color": "#7c3aed",
-            "circle-stroke-color": "#ffffff",
-            "circle-stroke-width": 2,
-          }}
-        />
-      </Source>
+      {locations.length <= MAX_POINT_MARKERS &&
+        locations.slice(1, -1).map((location) => (
+          <AdvancedMarker
+            key={location.id}
+            position={toLatLng(location)}
+            anchorLeft="-50%"
+            anchorTop="-50%"
+            onMouseEnter={() =>
+              onHover({
+                latitude: location.latitude,
+                longitude: location.longitude,
+                capturedAt: location.capturedAt,
+                accuracy: location.accuracy,
+              })
+            }
+            onMouseLeave={() => onHover(null)}
+          >
+            <span className="block size-3 rounded-full border-2 border-white bg-violet-600" />
+          </AdvancedMarker>
+        ))}
 
-      {first && <Marker {...positionOf(first)} color="#16a34a" style={{ zIndex: 1 }} />}
+      {first && (
+        <AdvancedMarker position={toLatLng(first)} title="Start" zIndex={1}>
+          <Pin background="#16a34a" borderColor="#15803d" glyphColor="#ffffff" />
+        </AdvancedMarker>
+      )}
 
-      {/* Separate keys: a marker picks its element (default pin or children) once, on mount. */}
       {last && last !== first && active && (
-        <Marker key="current" {...positionOf(last)} style={{ zIndex: 2 }}>
+        <AdvancedMarker
+          key="current"
+          position={toLatLng(last)}
+          anchorLeft="-50%"
+          anchorTop="-50%"
+          zIndex={2}
+        >
           <span className="relative flex size-5" title="Current position">
             <span className="absolute inline-flex size-full animate-ping rounded-full bg-violet-500 opacity-60" />
             <span className="relative inline-flex size-5 rounded-full border-[3px] border-white bg-violet-600 shadow" />
           </span>
-        </Marker>
+        </AdvancedMarker>
       )}
 
       {last && last !== first && !active && (
-        <Marker key="end" {...positionOf(last)} color="#dc2626" style={{ zIndex: 2 }} />
+        <AdvancedMarker key="end" position={toLatLng(last)} title="End" zIndex={2}>
+          <Pin background="#dc2626" borderColor="#b91c1c" glyphColor="#ffffff" />
+        </AdvancedMarker>
       )}
     </>
   );
@@ -523,7 +499,7 @@ function Viewport({
   fences: Fence[];
   follow: boolean;
 }) {
-  const { current: map } = useMap();
+  const map = useMap();
   const framed = useRef(false);
   const lastId = locations.at(-1)?.id;
 
@@ -532,13 +508,12 @@ function Viewport({
 
     if (!framed.current) {
       framed.current = true;
-      // No animation for the first frame — it should look like the page loaded there.
-      map.fitBounds(boundsOf(locations, fences), { padding: 48, duration: 0 });
+      map.fitBounds(boundsOf(locations, fences), 48);
       return;
     }
 
     const last = locations.at(-1);
-    if (follow && last) map.panTo(toLngLat(last));
+    if (follow && last) map.panTo(toLatLng(last));
     // Re-run on a new latest point, not on every merge that changed nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, lastId, follow]);
@@ -549,9 +524,9 @@ function Viewport({
 function MissingKey() {
   return (
     <div className="flex size-full flex-col items-center justify-center gap-2 p-6 text-center text-sm">
-      <p className="font-medium">Mapbox is not configured.</p>
+      <p className="font-medium">Google Maps is not configured.</p>
       <p className="max-w-sm text-muted-foreground">
-        Set <code className="font-mono">NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN</code> in{" "}
+        Set <code className="font-mono">NEXT_PUBLIC_GOOGLE_MAPS_API_KEY</code> in{" "}
         <code className="font-mono">.env</code> and restart the dev server. Events and points are
         still listed below.
       </p>

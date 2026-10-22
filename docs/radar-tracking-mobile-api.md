@@ -23,15 +23,24 @@ The app does **not** report geofence crossings and does **not** compute distance
 
 ## 2. Conventions
 
-Same as the existing tracking API:
+### Base URL
+
+| Environment | Base URL |
+|---|---|
+| Local dev, same machine | `http://localhost:3000` |
+| Local dev, physical phone on the same Wi-Fi | `http://<dev-machine-LAN-IP>:3000` (shown as "Network" when `npm run dev` starts) |
+| Android emulator | `http://10.0.2.2:3000` |
+| iOS simulator | `http://localhost:3000` |
+
+> Android blocks plain `http://` by default. For local development, allow cleartext traffic for the dev host in your network security config. iOS needs an App Transport Security exception for the same reason.
+
+### Requests and responses
 
 - JSON bodies with `Content-Type: application/json`, JSON responses.
 - No authentication in this POC.
-- Failed requests return `{ "success": false, "error": "…" }`. Branch on the HTTP status, not the text.
+- Failed requests return `{ "success": false, "error": "…" }`. The `error` names the field (and the index, in a batch). Branch on the HTTP status, not the text.
 - Timestamps are ISO 8601 UTC with `Z`. Coordinates are JSON numbers.
 - Location ids are generated on the device (UUID v4), once per fix, and reused on every retry.
-
-Base URLs are as in the existing guide (`http://<dev-machine-LAN-IP>:3000` for a phone on the same Wi-Fi, `http://10.0.2.2:3000` from the Android emulator).
 
 ---
 
@@ -70,7 +79,7 @@ POST /api/radar-tracking/trips
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `deviceId` | string | yes | 1–200 chars. Must match `Radar.setUserId`. |
-| `start` | object | yes | `latitude`, `longitude`, `radiusMeters` (50–10,000). |
+| `start` | object | yes | `latitude` (−90 to 90), `longitude` (−180 to 180), `radiusMeters` (whole number, 50–10,000). |
 | `destination` | object | yes | Same fields as `start`. |
 
 ```json
@@ -126,13 +135,20 @@ Call from the SDK's location listener (iOS `didUpdateLocation`, Android `RadarRe
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `id` | string | yes | Device-generated UUID, reused on retry. |
+| `id` | string | yes | Device-generated UUID (at most 100 chars), reused on retry. |
 | `latitude` | number | yes | −90 to 90 |
 | `longitude` | number | yes | −180 to 180 |
-| `accuracy` | number or `null` | no | Meters, from the SDK location. |
+| `accuracy` | number or `null` | no | Meters, from the SDK location; 0–100,000 when present. |
 | `capturedAt` | string | yes | The fix time from the SDK location, not the send time. |
 
 **Response — `200 OK`:** `{ "success": true, "duplicate": false }`. `duplicate: true` means it was already stored; treat it as success.
+
+| Status | When |
+|---|---|
+| 400 | Invalid body; the `error` names the field. Retrying the same point won't help. |
+| 404 | No such trip. Drop the queued points for it. |
+
+A **stopped trip still accepts locations**, so points queued while offline can be uploaded after Stop.
 
 ### 4.3 Upload queued locations
 
@@ -140,7 +156,14 @@ Call from the SDK's location listener (iOS `didUpdateLocation`, Android `RadarRe
 POST /api/radar-tracking/trips/{tripId}/locations/bulk
 ```
 
-`{ "locations": [ … ] }`, 1–1,000 items of the shape above. All-or-nothing validation, idempotent on `id`. Response: `{ "success": true, "inserted": 2, "skipped": 0 }`.
+`{ "locations": [ … ] }`, 1–1,000 items of the shape above. Idempotent on `id`. Response: `{ "success": true, "inserted": 2, "skipped": 0 }` (`skipped` counts ids already stored).
+
+| Status | When |
+|---|---|
+| 400 | Empty array, more than 1,000 items, or any invalid item. Validation is all-or-nothing: one bad point rejects the whole batch and nothing is stored. The `error` names the index, e.g. `locations[3].capturedAt …`. |
+| 404 | No such trip. Drop the queued points for it. |
+
+As with a single location, a stopped trip still accepts the batch.
 
 This queue is **only for our route line**. Radar receives the offline stretch through the SDK's own replay, independently.
 
@@ -163,7 +186,12 @@ No body. Completes the Radar trip and deletes both geofences.
 }
 ```
 
-A Radar failure does not fail the stop; it is reported in `radarSyncError`. `409` means the trip was already stopped; treat it as success. `404` means no such trip.
+A Radar failure does not fail the stop; it is reported in `radarSyncError`.
+
+| Status | When |
+|---|---|
+| 409 | The trip was already stopped. The body has `success: false` plus the same fields as above; treat it as success. |
+| 404 | No such trip. |
 
 ---
 

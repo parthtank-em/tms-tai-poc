@@ -41,7 +41,7 @@ export function wasReplayed(event: RadarEventView): boolean {
 
 const TARGET_LABEL: Record<RadarGeofenceTarget, string> = { START: "start", DESTINATION: "destination" };
 
-/** `user.exited_geofence` + START → "Left start geofence". */
+/** `user.exited_geofence` + START → "Exited start geofence". */
 export function eventLabel(event: Pick<RadarEventView, "type" | "target">): string {
   const fence = event.target ? `${TARGET_LABEL[event.target]} geofence` : "geofence";
 
@@ -49,7 +49,7 @@ export function eventLabel(event: Pick<RadarEventView, "type" | "target">): stri
     case "user.entered_geofence":
       return `Entered ${fence}`;
     case "user.exited_geofence":
-      return `Left ${fence}`;
+      return `Exited ${fence}`;
     case "user.dwelled_in_geofence":
       return `Dwelled in ${fence}`;
     case "user.started_trip":

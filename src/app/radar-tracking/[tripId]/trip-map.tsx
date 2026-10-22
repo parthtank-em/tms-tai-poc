@@ -314,7 +314,7 @@ export function TripMap({ initial }: { initial: RadarFeed }) {
                 <span className="text-muted-foreground">Waiting for Radar</span>
               )}
             </Stat>
-            <Stat label="Departed start">
+            <Stat label="Exited start">
               {formatDateTimeSeconds(trip.departedAt ? new Date(trip.departedAt) : null)}
             </Stat>
             <Stat label="Arrived">

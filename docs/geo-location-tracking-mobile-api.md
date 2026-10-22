@@ -575,5 +575,5 @@ These will change before production. Don't build anything that depends on them s
 - **No link to shipments or drivers.** A session knows only its `deviceId`.
 - Accuracy, speed, heading and battery fields aren't accepted yet; extra fields in the body are ignored.
 - **Two circular geofences per session** (start and destination), set at Start and never changed, at most 10 km in radius. The map lists crossings rather than pinning them on the route.
-- **Crossings depend on Radar's webhook reaching the server.** They typically arrive within seconds. A crossing made offline arrives when the SDK replays it, marked as an offline event.
+- **Crossings depend on Radar's webhook reaching the server**, with `user.entered_geofence` and `user.exited_geofence` enabled in the Radar dashboard (setup: [radar-tracking-poc.md §4](./radar-tracking-poc.md#4-radar-setup-dashboard-once)). They typically arrive within seconds. A crossing made offline arrives when the SDK replays it, marked as an offline event.
 - **Distance and ETA are the phone's Google figures**, stored as reported. The server doesn't recalculate or check them. Google has no truck routing mode, so the ETA is for a car.

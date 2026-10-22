@@ -1,5 +1,27 @@
 # Geo Location Tracking POC — Implementation Plan
 
+> **This is the original plan, kept for history. The POC has moved on since.**
+> For the current mobile contract, read [geo-location-tracking-mobile-api.md](./geo-location-tracking-mobile-api.md).
+> The section below lists where the code now differs from this plan.
+
+## 0. What changed since this plan
+
+The POC is now a **hybrid**: Radar does the geofencing, the phone gets distance and ETA from Google, and the web map is Google Maps.
+
+| This plan says | The code does now |
+|---|---|
+| Geofencing is out of scope (§1, §17) | Each session has a **start and a destination geofence**. The server creates both in **Radar** (`tms-track-start` / `tms-track-dest`, scoped to the `deviceId`) on Start and deletes them on Stop. |
+| The phone reports nothing but locations | Still true. Crossings come from **Radar by webhook** (`POST /api/webhooks/radar`, events `user.entered_geofence` / `user.exited_geofence`). The phone does not report them. |
+| Start body is `{ "deviceId" }` (§5.1) | Also requires `start`, `destination` (each `latitude`, `longitude`, `radiusMeters` 50–10,000) and the planned `distanceMeters` and `eta` from Google. The response adds a `radar` block. |
+| A location is `id`, `latitude`, `longitude`, `capturedAt` (§5.2) | Optional `remainingDistanceMeters` and `eta` (from Google, computed on the phone) ride along with each location. The map shows the figures from the newest `capturedAt`. |
+| Two tables (§3, §4) | Three: `tracking_sessions` (plus start/destination fences, `distanceMeters`, `eta`), `tracking_locations` (plus `remainingDistanceMeters`, `eta`) and `tracking_geofence_events`. |
+| Poll with `capturedAt > after` (§8) | Polls filter on **`receivedAt >= after`**. Filtering on capture time would never return a late offline batch, because its points carry old capture times. The client re-sorts by `capturedAt`. |
+| Stop only sets `COMPLETED` and `endedAt` (§5.4) | Also deletes both Radar fences. A Radar failure is logged and does not fail the stop. |
+| — | `POST /sessions/{id}/geofence-events` exists only for app builds from before Radar. Current apps must not call it. |
+| — | Start returns `502` if Radar fails (nothing is created) and `503` if Radar is not configured. |
+
+The rest of this document is the plan as originally written.
+
 ## 1. POC Goal
 
 Build a minimal location-tracking POC with:

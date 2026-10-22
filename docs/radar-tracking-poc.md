@@ -10,10 +10,10 @@ Mobile API reference: [radar-tracking-mobile-api.md](./radar-tracking-mobile-api
 
 | | `/tracking` (existing) | `/radar-tracking` (this POC) |
 |---|---|---|
-| Who decides inside/outside a fence | The phone's OS geofencing, reported to us | Radar, from the locations its SDK tracks |
-| ETA / remaining distance | Computed on the phone, sent with each location | Radar trip ETA (car mode), delivered by webhook |
+| Who decides inside/outside a fence | Radar, from the locations its SDK tracks (fences tagged `tms-track-*`, crossings by webhook) | Radar, from the locations its SDK tracks (fences tagged `tms-radar-*`, crossings by webhook) |
+| ETA / remaining distance | Computed on the phone (Google Routes API), sent with each location | Radar trip ETA (car mode), delivered by webhook |
 | Trip status | Inferred from events by a person reading the map | Radar trip status: started, approaching, arrived, completed… |
-| Offline | Our own queue for locations **and** events | Radar SDK replays offline locations to Radar (`replay: all`); our own queue only for the route line |
+| Offline | Radar SDK replays offline locations to Radar, so crossings arrive late by webhook; our own queue only for locations | Radar SDK replays offline locations to Radar (`replay: all`); our own queue only for the route line |
 | Route line on the map | Every location the phone posts | The same — the phone forwards each Radar SDK location to us (Radar has no per-location webhook) |
 
 ## 2. Isolation
@@ -64,15 +64,28 @@ Web map ◄── polls GET /api/radar-tracking/trips/{id}/feed?after=<cursor>
 3. **Settings → SDK / remote tracking options:** enable offline replay (`replay: all`).
 4. **Integrations → Webhooks:** add `https://<tunnel>/api/webhooks/radar`, environment Test, delivery **Multiple Events**. Copy the webhook's security token into `RADAR_WEBHOOK_TOKEN`. Radar cannot reach `localhost`, so use an ngrok or Cloudflare tunnel in development, as with Jumio.
 
+   Enable these event types. The webhook is shared with `/tracking`, so the list covers both POCs:
+
+   | Event | Used by | What it drives |
+   |---|---|---|
+   | `user.entered_geofence` | Both | `/tracking`: ENTER crossing. `/radar-tracking`: "Entered … geofence" on the map. |
+   | `user.exited_geofence` | Both | `/tracking`: EXIT crossing. `/radar-tracking`: `departedAt` (start fence). |
+   | `user.updated_trip` | `/radar-tracking` | Trip status and ETA while driving. |
+   | `user.approaching_trip_destination` | `/radar-tracking` | Status `approaching`, plus ETA. |
+   | `user.arrived_at_trip_destination` | `/radar-tracking` | Status `arrived` and `arrivedAt`. |
+   | `user.stopped_trip` | `/radar-tracking` | Final status when Radar closes the trip itself (e.g. expiry). |
+
+   Other event types are not needed. If Radar sends them anyway, the webhook acknowledges and drops the ones that belong to neither POC. `user.started_trip` is not needed because the trip's first status comes from Radar's response to `POST /v1/trips`.
+
 ## 5. Data model
 
-**`radar_trips`**: one per trip. `id` is our UUID and also the Radar trip's `externalId` and both geofences' `externalId`. Holds the start/destination fences, our own lifecycle (`ACTIVE`/`COMPLETED`), Radar's trip status, the latest Radar ETA (`etaMinutes`, `etaDistanceMeters`, `etaUpdatedAt`), and `departedAt` / `arrivedAt` taken from events. `radarSyncError` records the last failed Radar call so the page can show it.
+**`radar_trips`**: one per trip. `id` is our UUID and also the Radar trip's `externalId` and both geofences' `externalId`. Holds the start/destination fences, our own lifecycle (`ACTIVE`/`COMPLETED`), Radar's trip status, the latest Radar ETA (`etaMinutes`, `etaDistanceMeters`, `radarUpdatedAt`), and `departedAt` / `arrivedAt` taken from events. `radarSyncError` records the last failed Radar call so the page can show it.
 
 **`radar_trip_locations`**: the route line. Device-generated ids make retries idempotent, exactly as in `/tracking`.
 
 **`radar_events`**: every Radar event that belongs to a trip. Primary key is Radar's `_id`, so a redelivered webhook is skipped. `actualCreatedAt` is when it happened on the device (differs from `createdAt` for replayed offline locations); the raw event is kept in `payload`.
 
-**Newest wins:** a webhook only moves the trip's status/ETA if its `actualCreatedAt` is newer than `etaUpdatedAt`, so a late replayed event cannot overwrite a fresher one.
+**Newest wins:** a webhook only moves the trip's status/ETA if its `actualCreatedAt` is newer than `radarUpdatedAt`, so a late replayed event cannot overwrite a fresher one.
 
 ## 6. Constraints learned from Radar's docs
 

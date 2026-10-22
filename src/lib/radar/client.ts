@@ -64,33 +64,41 @@ async function request<T>(
 }
 
 /**
- * Creates or replaces one fence of a trip. `userIds` scopes it to the trip's
- * device: without it Radar would fire events for any user who drives through.
+ * One fence in Radar: tag + externalId name it. The Radar POC tags fences
+ * `tms-radar-*` and the /tracking POC `tms-track-*`, each with its own id as
+ * the externalId, so the two never address each other's fences.
+ */
+export type GeofenceKey = { tag: string; externalId: string };
+
+/**
+ * Creates or replaces one fence. `userIds` scopes it to one device: without it
+ * Radar would fire events for any user who drives through.
  */
 export function upsertGeofence(
   config: RadarConfig,
-  tripId: string,
-  target: RadarGeofenceTarget,
+  key: GeofenceKey,
   geofence: Geofence,
   deviceId: string,
+  details: { description: string; metadata: Record<string, string> },
 ): Promise<RadarResult<unknown>> {
-  return request(config, config.secretKey, "PUT", `/geofences/${geofenceTag(target)}/${tripId}`, {
-    description: `${target === "START" ? "Start" : "Destination"} of trip ${tripId}`,
+  return request(config, config.secretKey, "PUT", `/geofences/${key.tag}/${key.externalId}`, {
+    description: details.description,
     type: "circle",
     // GeoJSON order: longitude first.
     coordinates: [geofence.longitude, geofence.latitude],
     radius: geofence.radiusMeters,
     userIds: deviceId,
-    metadata: { tripId },
+    metadata: details.metadata,
   });
 }
 
-export function deleteGeofence(
-  config: RadarConfig,
-  tripId: string,
-  target: RadarGeofenceTarget,
-): Promise<RadarResult<unknown>> {
-  return request(config, config.secretKey, "DELETE", `/geofences/${geofenceTag(target)}/${tripId}`);
+export function deleteGeofence(config: RadarConfig, key: GeofenceKey): Promise<RadarResult<unknown>> {
+  return request(config, config.secretKey, "DELETE", `/geofences/${key.tag}/${key.externalId}`);
+}
+
+/** A Radar POC trip's fence: the trip id is the externalId, the tag says which end. */
+export function tripGeofence(tripId: string, target: RadarGeofenceTarget): GeofenceKey {
+  return { tag: geofenceTag(target), externalId: tripId };
 }
 
 /** Starts a Radar trip whose destination is the trip's destination fence. */

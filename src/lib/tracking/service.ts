@@ -1,5 +1,8 @@
 import { prisma } from "@/lib/prisma";
+import { deleteGeofence, upsertGeofence } from "@/lib/radar/client";
+import { getRadarConfig, type RadarConfig } from "@/lib/radar/config";
 
+import { sessionGeofence, type TrackingRadarEvent } from "./radar";
 import type {
   Geofence,
   GeofenceEventInput,
@@ -127,8 +130,24 @@ const SESSION_SELECT = {
   _count: { select: { locations: true } },
 } as const;
 
-/** Every press of Start is a new session — nothing is resumed. */
-export async function startSession(input: StartSessionInput): Promise<SessionView> {
+export type StartSessionResult =
+  | { outcome: "started"; session: SessionView }
+  | { outcome: "unconfigured" }
+  | { outcome: "radar_failed"; message: string };
+
+/**
+ * Creates the session here and its two fences in Radar, which decides inside
+ * and outside from then on.
+ *
+ * All or nothing: if a fence cannot be created the row and any fence already
+ * made are removed again, so the phone never tracks a session whose
+ * crossings nobody would report. Every press of Start is a new session —
+ * nothing is resumed.
+ */
+export async function startSession(input: StartSessionInput): Promise<StartSessionResult> {
+  const config = getRadarConfig();
+  if (!config) return { outcome: "unconfigured" };
+
   const { deviceId, start, destination, distanceMeters, eta } = input;
 
   const session = await prisma.trackingSession.create({
@@ -146,7 +165,33 @@ export async function startSession(input: StartSessionInput): Promise<SessionVie
     select: SESSION_SELECT,
   });
 
-  return toSessionView(session);
+  const fences = await Promise.all([
+    upsertGeofence(config, sessionGeofence(session.id, "START"), start, deviceId, {
+      description: `Start of tracking session ${session.id}`,
+      metadata: { sessionId: session.id },
+    }),
+    upsertGeofence(config, sessionGeofence(session.id, "DESTINATION"), destination, deviceId, {
+      description: `Destination of tracking session ${session.id}`,
+      metadata: { sessionId: session.id },
+    }),
+  ]);
+
+  const failed = fences.find((result) => !result.ok);
+  if (failed && !failed.ok) {
+    // Best effort: a fence that was never created just 404s.
+    await deleteSessionFences(config, session.id);
+    await prisma.trackingSession.delete({ where: { id: session.id } });
+    return { outcome: "radar_failed", message: failed.message };
+  }
+
+  return { outcome: "started", session: toSessionView(session) };
+}
+
+function deleteSessionFences(config: RadarConfig, sessionId: string) {
+  return Promise.all([
+    deleteGeofence(config, sessionGeofence(sessionId, "START")),
+    deleteGeofence(config, sessionGeofence(sessionId, "DESTINATION")),
+  ]);
 }
 
 export async function listSessions(): Promise<SessionView[]> {
@@ -244,6 +289,13 @@ export type StopResult =
   | { outcome: "not_found" }
   | { outcome: "not_active"; session: SessionView };
 
+/**
+ * Ends the session and deletes its Radar fences.
+ *
+ * The stop never fails on Radar's account — the phone needs a definite
+ * answer. A fence left behind is scoped to this device and keyed to this
+ * session, so any crossing it still reports lands on the stopped session.
+ */
 export async function stopSession(sessionId: string): Promise<StopResult> {
   // The status condition sits in the write itself, so two Stop requests racing
   // each other cannot both succeed and overwrite `endedAt`.
@@ -252,10 +304,82 @@ export async function stopSession(sessionId: string): Promise<StopResult> {
     data: { status: "COMPLETED", endedAt: new Date() },
   });
 
+  if (count === 1) await releaseSessionFences(sessionId);
+
   const session = await findSession(sessionId);
 
   if (!session) return { outcome: "not_found" };
   return count === 1 ? { outcome: "stopped", session } : { outcome: "not_active", session };
+}
+
+async function releaseSessionFences(sessionId: string): Promise<void> {
+  const config = getRadarConfig();
+  if (!config) {
+    console.error(`[tracking] Radar is not configured — fences of session ${sessionId} were left in Radar.`);
+    return;
+  }
+
+  const errors = (await deleteSessionFences(config, sessionId)).flatMap((result) =>
+    result.ok ? [] : [result.message],
+  );
+  if (errors.length > 0) {
+    console.error(`[tracking] Could not delete Radar fences of session ${sessionId}:\n${errors.join("\n")}`);
+  }
+}
+
+export type IngestTrackingResult = { stored: number; unknownSession: number; wrongUser: number };
+
+/**
+ * Stores the crossings Radar reported by webhook for /tracking sessions.
+ *
+ * Idempotent: each row's id is Radar's event `_id`, so a redelivery is
+ * skipped. As with device-reported events, a COMPLETED session still accepts
+ * them — a replayed offline stretch can arrive after Stop.
+ *
+ * An event whose user is not the session's device is dropped. The fences are
+ * scoped to that device, so this should not happen; it is a backstop.
+ */
+export async function ingestTrackingEvents(
+  events: TrackingRadarEvent[],
+): Promise<IngestTrackingResult> {
+  if (events.length === 0) return { stored: 0, unknownSession: 0, wrongUser: 0 };
+
+  const sessionIds = [...new Set(events.map((event) => event.sessionId))];
+  const sessions = await prisma.trackingSession.findMany({
+    where: { id: { in: sessionIds } },
+    select: { id: true, deviceId: true },
+  });
+  const deviceOf = new Map(sessions.map((session) => [session.id, session.deviceId]));
+
+  let unknownSession = 0;
+  let wrongUser = 0;
+
+  const accepted = events.filter((event) => {
+    const deviceId = deviceOf.get(event.sessionId);
+    if (deviceId === undefined) {
+      unknownSession++;
+      return false;
+    }
+    if (event.userId !== null && event.userId !== deviceId) {
+      wrongUser++;
+      return false;
+    }
+    return true;
+  });
+
+  const { count } = await prisma.trackingGeofenceEvent.createMany({
+    data: accepted.map(({ id, sessionId, type, target, capturedAt, isOffline }) => ({
+      id,
+      sessionId,
+      type,
+      target,
+      capturedAt,
+      isOffline,
+    })),
+    skipDuplicates: true,
+  });
+
+  return { stored: count, unknownSession, wrongUser };
 }
 
 /**

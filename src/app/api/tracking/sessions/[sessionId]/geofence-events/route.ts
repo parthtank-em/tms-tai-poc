@@ -6,6 +6,10 @@ import { parseGeofenceEvents } from "@/lib/tracking/validation";
  * `POST /api/tracking/sessions/{sessionId}/geofence-events` — crossings the
  * device detected, live or from its offline queue.
  *
+ * Legacy: new sessions get their crossings from Radar by webhook
+ * (`/api/webhooks/radar`). Kept so an app build from before Radar still works;
+ * a current app should not call it, or each crossing would be stored twice.
+ *
  * One endpoint for both: a live crossing is a batch of one, and `isOffline` on
  * each event says which it was. `target` says which fence was crossed — START
  * or DESTINATION. Idempotent on event id, like the bulk

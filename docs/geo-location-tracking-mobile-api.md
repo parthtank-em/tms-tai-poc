@@ -1,8 +1,14 @@
 # Geo Location Tracking — Mobile API Reference
 
-For developers building the mobile app. It covers the five endpoints a device calls: start a session (a trip with a start and a destination, each with a geofence), send a location, upload an offline batch, report geofence events, and stop.
+For developers building the mobile app. It covers the Radar SDK setup and the four endpoints a device calls: start a session (a trip with a start and a destination, each with a geofence), send a location, upload an offline batch, and stop.
 
-Distance and ETA are calculated **on the phone**. The server stores what the phone reports and shows it on the web map; it does no routing of its own.
+This POC is a **hybrid**:
+
+- **Geofencing is Radar.** The server creates the two fences in Radar, and the Radar SDK on the phone decides when the device enters or leaves them. Radar reports each crossing to the server by webhook, so **the app doesn't report geofence events**.
+- **Distance and ETA are Google, on the phone.** The app gets them from the Google Routes API and sends them with each location. The server stores what the phone reports; it does no routing of its own.
+- **The web map is Google Maps.**
+
+Radar trips aren't used, so Radar never computes an ETA here. (The separate Radar POC, [radar-tracking-mobile-api.md](./radar-tracking-mobile-api.md), is the Radar-only alternative.)
 
 Design background is in [geo-location-tracking-poc-implementation.md](./geo-location-tracking-poc-implementation.md).
 
@@ -13,18 +19,19 @@ Design background is in [geo-location-tracking-poc-implementation.md](./geo-loca
 A **session** is one tracking run. Every tap on **Start** creates a new session, and all locations until **Stop** belong to it.
 
 ```text
-Start ──► POST /api/tracking/sessions                      → sessionId, start + destination fences
-  │        (start, destination, distanceMeters, eta)
+Start ──► POST /api/tracking/sessions                      → sessionId; the server creates both
+  │        (start, destination, distanceMeters, eta)          fences in Radar for this deviceId
+  │       Radar.startTracking(...)
   │
-  ├─ online:  POST /api/tracking/sessions/{sessionId}/locations       (one point, ~every 2 min,
-  ├─ offline: keep points in a local queue                              with remaining distance + ETA)
-  ├─ back online: POST /api/tracking/sessions/{sessionId}/locations/bulk  (the queue)
+  ├─ each Radar SDK location:
+  │    online:  POST /api/tracking/sessions/{sessionId}/locations       (one point, with the
+  │    offline: keep points in a local queue                             Google distance + ETA)
+  │    back online: POST /api/tracking/sessions/{sessionId}/locations/bulk  (the queue)
   │
-  ├─ geofence crossed: POST /api/tracking/sessions/{sessionId}/geofence-events
-  │                    (live or queued — same endpoint, isOffline says which,
-  │                     target says START or DESTINATION)
+  ├─ geofence crossed: nothing for the app to do — Radar tells the server by webhook
+  │                    (offline crossings are replayed by the SDK when back online)
   │
-Stop ──► POST /api/tracking/sessions/{sessionId}/stop
+Stop ──► Radar.stopTracking(); POST /api/tracking/sessions/{sessionId}/stop   (server deletes the fences)
 ```
 
 | Method | Endpoint | Purpose |
@@ -32,8 +39,35 @@ Stop ──► POST /api/tracking/sessions/{sessionId}/stop
 | POST | `/api/tracking/sessions` | [Start a session](#31-start-a-session) |
 | POST | `/api/tracking/sessions/{sessionId}/locations` | [Send one location](#32-send-one-location) |
 | POST | `/api/tracking/sessions/{sessionId}/locations/bulk` | [Upload queued locations](#33-upload-queued-locations-bulk) |
-| POST | `/api/tracking/sessions/{sessionId}/geofence-events` | [Report geofence events](#34-report-geofence-events) |
+| POST | `/api/tracking/sessions/{sessionId}/geofence-events` | [Legacy — don't call](#34-report-geofence-events-legacy) |
 | POST | `/api/tracking/sessions/{sessionId}/stop` | [Stop the session](#35-stop-a-session) |
+
+### 1.1 Who does what
+
+| Concern | Who |
+|---|---|
+| Location tracking in the background, battery, offline replay to Radar | **Radar SDK** on the phone |
+| Deciding when the device enters or leaves the start and destination | **Radar**, from the SDK's locations |
+| Creating the two fences in Radar, and deleting them at Stop | **Our backend**, on `POST /sessions` and `POST /stop` |
+| Distance and ETA | **The app**, from the Google Routes API |
+| The route line on the web map | **The app** forwards each SDK location to our backend |
+
+### 1.2 Radar SDK setup (once per app launch)
+
+Use the Radar **test** publishable key (`prj_test_pk_…`) from the team.
+
+```text
+Radar.initialize(publishableKey)
+Radar.setUserId(deviceId)          // the same deviceId you send to our API
+request "Always" location permission (background location on Android)
+Radar.trackOnce()                  // creates the Radar user before a session's fences name it
+```
+
+`deviceId` must be stable for the install. It becomes the Radar `userId`, and both fences are scoped to it, so crossings only fire for this device.
+
+Native SDKs: iOS `RadarSDK`, Android `io.radar:sdk`, React Native `react-native-radar`, Flutter `flutter_radar`. Use SDK 3.16 or newer so tracking options (including offline replay) can be set from the Radar dashboard.
+
+Use the Radar SDK as the app's **only** location source. Running a second location tracker next to it roughly doubles the battery cost.
 
 ---
 
@@ -102,10 +136,10 @@ Call this when the user taps **Start**. Each call creates a **new** session; not
 | `start` | object | yes | Where the trip starts, and the geofence around it. |
 | `start.latitude` | number | yes | Centre, −90 to 90 |
 | `start.longitude` | number | yes | Centre, −180 to 180 |
-| `start.radiusMeters` | integer | yes | 50–100,000. Below ~50 m normal GPS drift causes false exits. |
+| `start.radiusMeters` | integer | yes | 50–10,000. Below ~50 m normal GPS drift causes false exits; 10 km is Radar's limit. |
 | `destination` | object | yes | Where the trip ends, and the geofence around it. Same three fields and rules as `start`. |
-| `distanceMeters` | integer | yes | The planned trip distance from the phone's route, in meters. |
-| `eta` | string | yes | The phone's estimated arrival time. ISO 8601 UTC. |
+| `distanceMeters` | integer | yes | The planned trip distance from the Google route, in meters. |
+| `eta` | string | yes | The estimated arrival time from the Google route. ISO 8601 UTC. |
 
 ```json
 {
@@ -127,13 +161,25 @@ Call this when the user taps **Start**. Each call creates a **new** session; not
   "start":       { "latitude": 21.1702, "longitude": 72.8311, "radiusMeters": 300 },
   "destination": { "latitude": 22.3072, "longitude": 73.1812, "radiusMeters": 500 },
   "distanceMeters": 112400,
-  "eta": "2026-09-28T11:05:00.000Z"
+  "eta": "2026-09-28T11:05:00.000Z",
+  "radar": {
+    "userId": "device-123",
+    "startGeofenceTag": "tms-track-start",
+    "destinationGeofenceTag": "tms-track-dest",
+    "geofenceExternalId": "f61e6baf-e426-46ca-8fff-7243ae3d5cdd"
+  }
 }
 ```
 
 Store `sessionId` durably, not only in memory. Every later call needs it, and it must survive the app being killed while tracking.
 
-Register **both** circles with the OS geofencing API (Android `GeofencingClient`, iOS `CLCircularRegion`) and report crossings through [Report geofence events](#34-report-geofence-events), with `target` saying which circle was crossed. **The server doesn't check positions against the fences.** It only draws them on the web map, so the app decides inside and outside.
+By the time this returns, Radar already has both fences for this `deviceId`. Then start tracking:
+
+```text
+Radar.startTracking(<continuous / responsive preset>)
+```
+
+**Don't register OS geofences and don't report crossings.** Radar decides inside and outside and tells the server by webhook. The `radar` block is for reference: if you show crossings in the app from the SDK's event listener, a fence with one of those tags and `externalId` equal to `sessionId` belongs to this session.
 
 The start, destination and fences are fixed for the life of the session. There's no endpoint to change them. Distance and ETA updates go with each location instead (see [Send one location](#32-send-one-location)).
 
@@ -142,6 +188,8 @@ The start, destination and fences are fixed for the life of the session. There's
 | Status | When |
 |---|---|
 | 400 | `deviceId` missing, empty, not a string, or over 200 characters; `start` or `destination` missing, not an object, or any of its three fields missing or out of range; `distanceMeters` missing or not a whole number ≥ 0; `eta` missing or not a timestamp; or the body isn't valid JSON. |
+| 502 | A Radar call failed while creating the fences. Nothing was created. Safe to retry. |
+| 503 | Radar isn't configured on the server. |
 
 **Example**
 
@@ -159,7 +207,7 @@ curl -X POST http://localhost:3000/api/tracking/sessions \
 POST /api/tracking/sessions/{sessionId}/locations
 ```
 
-Call this for each GPS fix while online (about every 2 minutes).
+Call this for each location from the Radar SDK's location listener (iOS `didUpdateLocation`, Android `RadarReceiver.onLocationUpdated`, React Native `Radar.on('location', …)`) while online, about every 2 minutes.
 
 **Path parameters**
 
@@ -174,9 +222,9 @@ Call this for each GPS fix while online (about every 2 minutes).
 | `id` | string | yes | Generated on the device (UUID v4), 1–100 characters. **Generate it once, when the fix is taken, and reuse it on every retry.** |
 | `latitude` | number | yes | −90 to 90 |
 | `longitude` | number | yes | −180 to 180 |
-| `capturedAt` | string | yes | When the GPS fix was taken, not when it's sent. ISO 8601 UTC. |
-| `remainingDistanceMeters` | integer or `null` | no | The phone's remaining distance to the destination **at this fix**, in meters. |
-| `eta` | string or `null` | no | The phone's ETA **at this fix**. ISO 8601 UTC. |
+| `capturedAt` | string | yes | When the GPS fix was taken (the SDK location's timestamp), not when it's sent. ISO 8601 UTC. |
+| `remainingDistanceMeters` | integer or `null` | no | The remaining distance to the destination from the latest Google route, in meters. |
+| `eta` | string or `null` | no | The ETA from the latest Google route. ISO 8601 UTC. |
 
 ```json
 {
@@ -191,7 +239,9 @@ Call this for each GPS fix while online (about every 2 minutes).
 
 `remainingDistanceMeters` and `eta` are optional: leave them out (or send `null`) when the phone has no route yet, and the location is still stored. If you send them they must be valid, or the request is rejected.
 
-Compute them **when the fix is taken** and store them with the queued point, so an offline point carries the values from that moment. The web map shows the figures from the point with the newest `capturedAt`, so a late offline batch never overwrites a fresher live ETA.
+Attach them **when the fix is taken** and store them with the queued point, so an offline point carries the values from that moment. The web map shows the figures from the point with the newest `capturedAt`, so a late offline batch never overwrites a fresher live ETA.
+
+**Don't call Google on every fix.** Each Routes API call is billed. Recompute every few minutes (or when the driver leaves the route) and attach the latest figures to the fixes in between. Offline, keep attaching the last figures you have.
 
 **Response — `200 OK`**
 
@@ -293,13 +343,17 @@ curl -X POST http://localhost:3000/api/tracking/sessions/$SESSION_ID/locations/b
 
 ---
 
-### 3.4 Report geofence events
+### 3.4 Report geofence events (legacy)
 
 ```http
 POST /api/tracking/sessions/{sessionId}/geofence-events
 ```
 
-Call this when the device enters or leaves the start or destination geofence. **One endpoint for live and offline:** send a single crossing as soon as it happens, or the whole queue once the connection is back.
+> **Don't call this from a current app build.** Crossings now come from Radar by webhook. The endpoint is kept only so an app built before Radar keeps working. Calling it as well would store every crossing twice, once from Radar and once from the app.
+
+The rest of this section documents the old behaviour for reference.
+
+The device reported entering or leaving the start or destination geofence. **One endpoint for live and offline:** a single crossing as soon as it happens, or the whole queue once the connection is back.
 
 Typically an `EXIT` from `START` means the trip has begun, and an `ENTER` into `DESTINATION` means it has arrived. The server stores both kinds as reported and doesn't act on them.
 
@@ -363,7 +417,7 @@ curl -X POST http://localhost:3000/api/tracking/sessions/$SESSION_ID/geofence-ev
 POST /api/tracking/sessions/{sessionId}/stop
 ```
 
-Call this when the user taps **Stop**. No request body.
+Call this when the user taps **Stop**. No request body. The server also deletes both Radar fences; a Radar failure there doesn't fail the stop.
 
 **Response — `200 OK`**
 
@@ -401,7 +455,8 @@ curl -X POST http://localhost:3000/api/tracking/sessions/$SESSION_ID/stop
 | 400 | The request is malformed | **Don't retry the same payload.** It will fail the same way. Log the `error`; this is a bug in the app. |
 | 404 | The session doesn't exist | Stop sending for this session. Discard its queue and log it. |
 | 409 | Stop called on a session that's already stopped | Treat as success. |
-| 409 | Geofence events sent for a fence the session doesn't have | Don't retry. Log it and drop those events. |
+| 502 | Start couldn't create the Radar fences | Nothing was created. Retry Start; don't start tracking without a `sessionId`. |
+| 503 | Start called while Radar isn't configured on the server | Server setup problem. Report it; retrying won't help until it's fixed. |
 | 5xx, timeout, no network | Server or network problem | **Keep the points queued** and retry with backoff. Retries are safe because location ids make them idempotent. |
 
 ---
@@ -411,24 +466,28 @@ curl -X POST http://localhost:3000/api/tracking/sessions/$SESSION_ID/stop
 ### 5.1 Recommended device logic
 
 ```text
+on app launch:
+    Radar.initialize(pk); Radar.setUserId(deviceId); Radar.trackOnce()
+
 on Start tap:
-    route = phone's maps SDK: start → destination   // distance + ETA
-    { sessionId, start, destination } = POST /sessions
+    route = Google Routes API: start → destination   // distance + ETA
+    { sessionId } = POST /sessions
         { deviceId, start, destination, distanceMeters: route.distance, eta: route.eta }
     save sessionId to persistent storage
-    register both start and destination with the OS geofencing API
+    Radar.startTracking(preset)                      // offline replay is set from the dashboard
 
-on geofence ENTER / EXIT from the OS:
-    event = { id: newUUID(), type, target: START | DESTINATION, capturedAt: detectionTimeUtc }
-    append event to a persistent event queue    // separate from the location queue
-    if online: POST /geofence-events with the queue
-               (isOffline: false for the event just detected, true for older ones)
+every few minutes while tracking (and when online):
+    progress = Google Routes API: current position → destination
+    // offline: keep the last progress you had
 
-on each GPS fix:
-    progress = phone's latest remaining distance + ETA (if it has them)
-    point = { id: newUUID(), latitude, longitude, capturedAt: fixTimeUtc,
+on each Radar SDK location (listener):
+    point = { id: newUUID(), latitude, longitude, capturedAt: location.timestamp,
               remainingDistanceMeters: progress?.distance, eta: progress?.eta }
     append point to persistent queue            // always queue first
+
+geofence crossings:
+    nothing to send — Radar reports them to the server.
+    Optionally show them in the app from the SDK's event listener.
 
 on each send opportunity (new fix, connectivity restored, app resumed):
     if offline: do nothing
@@ -440,8 +499,8 @@ on each send opportunity (new fix, connectivity restored, app resumed):
     on 5xx / network error: keep the queue, retry with backoff
 
 on Stop tap:
-    stop taking GPS fixes, unregister both geofences
-    flush both queues (as above), then POST /stop
+    Radar.stopTracking()
+    flush the location queue (as above), then POST /stop   // the server deletes the fences
     if offline: remember "stop pending" and send it after the queue is flushed
     on 200 or 409: clear sessionId
 ```
@@ -459,15 +518,16 @@ on Stop tap:
 | | Interval |
 |---|---|
 | GPS fix and send, device | about every **2 minutes** |
+| Google Routes API recompute, device | every **few minutes**, or when the driver leaves the route |
 | Web map refresh (for reference only) | every 5 seconds |
 
-The two are independent. Sending more often than every 2 minutes works, but isn't needed for the POC.
+These are independent. Sending more often than every 2 minutes works, but isn't needed for the POC.
 
 ---
 
 ## 6. End-to-end smoke test
 
-Run these in order against a running dev server (`npm run dev`). They cover every mobile endpoint, including a retried bulk upload.
+Run these in order against a running dev server (`npm run dev`) with the Radar keys configured. They cover every mobile endpoint, including a retried bulk upload. Geofence crossings need a real Radar track, so they aren't part of this test; use the simulator (below) for those.
 
 ```bash
 BASE=http://localhost:3000/api/tracking/sessions
@@ -495,23 +555,14 @@ curl -s -X POST $BASE/$SESSION_ID/locations/bulk -H "Content-Type: application/j
 curl -s -X POST $BASE/$SESSION_ID/locations/bulk -H "Content-Type: application/json" -d "$BATCH"
 # → {"success":true,"inserted":0,"skipped":2}
 
-# 4. Geofence events: left the start, later arrived at the destination; then resend
-EVENTS='{"events":[
-  {"id":"'$SESSION_ID'-e1","type":"EXIT","target":"START","capturedAt":"2026-09-28T08:33:00.000Z","isOffline":true},
-  {"id":"'$SESSION_ID'-e2","type":"ENTER","target":"DESTINATION","capturedAt":"2026-09-28T08:52:00.000Z","isOffline":false}]}'
-curl -s -X POST $BASE/$SESSION_ID/geofence-events -H "Content-Type: application/json" -d "$EVENTS"
-# → {"success":true,"inserted":2,"skipped":0}
-curl -s -X POST $BASE/$SESSION_ID/geofence-events -H "Content-Type: application/json" -d "$EVENTS"
-# → {"success":true,"inserted":0,"skipped":2}
-
-# 5. Stop, then stop again
+# 4. Stop, then stop again
 curl -s -X POST $BASE/$SESSION_ID/stop
 # → {"success":true,...,"status":"COMPLETED",...}
 curl -s -w " HTTP %{http_code}\n" -X POST $BASE/$SESSION_ID/stop
 # → {"success":false,"error":"Tracking session is not active.",...} HTTP 409
 ```
 
-Then open `http://localhost:3000/tracking` in a signed-in browser to see the session and its route. `http://localhost:3000/tracking/simulator` drives the same endpoints from the browser, including an offline mode, if you want to see the expected behaviour before building it.
+Then open `http://localhost:3000/tracking` in a signed-in browser to see the session and its route. `http://localhost:3000/tracking/simulator` drives the same endpoints from the browser and sends each position to real Radar, so you can see crossings arrive by webhook. It has an offline mode too, but the web SDK can't replay offline positions to Radar the way the phone SDK does.
 
 ---
 
@@ -523,5 +574,6 @@ These will change before production. Don't build anything that depends on them s
 - **No rate limiting.**
 - **No link to shipments or drivers.** A session knows only its `deviceId`.
 - Accuracy, speed, heading and battery fields aren't accepted yet; extra fields in the body are ignored.
-- **Two circular geofences per session** (start and destination), set at Start and never changed. Events carry no coordinates, so the map lists them rather than pinning them on the route.
-- **Distance and ETA are the phone's figures**, stored as reported. The server doesn't recalculate or check them.
+- **Two circular geofences per session** (start and destination), set at Start and never changed, at most 10 km in radius. The map lists crossings rather than pinning them on the route.
+- **Crossings depend on Radar's webhook reaching the server.** They typically arrive within seconds. A crossing made offline arrives when the SDK replays it, marked as an offline event.
+- **Distance and ETA are the phone's Google figures**, stored as reported. The server doesn't recalculate or check them. Google has no truck routing mode, so the ETA is for a car.

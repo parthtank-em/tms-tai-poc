@@ -379,9 +379,9 @@ function GeofenceCircle({ fence }: { fence: Fence }) {
 }
 
 /**
- * The device's latest report, by capture time. Unknown until the first event:
- * the device only reports crossings, so a session that starts inside the fence
- * and never leaves has nothing to show.
+ * The latest crossing, by capture time — reported by Radar, or by the device
+ * on sessions from before Radar. Unknown until the first event: only crossings
+ * are reported, so a fence the device never enters or leaves has nothing to show.
  */
 function GeofenceStatus({ events }: { events: GeofenceEventView[] }) {
   const latest = events.at(-1);
@@ -539,7 +539,8 @@ function GeofenceEventTable({ events }: { events: GeofenceEventView[] }) {
 
       {rows.length === 0 ? (
         <p className="rounded-xl border p-6 text-sm text-muted-foreground">
-          The device has not reported entering or leaving a geofence yet.
+          No geofence entries or exits yet. Radar reports them by webhook — check that the webhook
+          URL in the Radar dashboard reaches this app.
         </p>
       ) : (
         <div className="rounded-xl border">

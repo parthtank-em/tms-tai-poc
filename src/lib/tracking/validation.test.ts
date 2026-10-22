@@ -66,7 +66,7 @@ describe("parseStartSession", () => {
     ["latitude out of range", { ...fence, latitude: 91 }],
     ["missing radius", { ...fence, radiusMeters: undefined }],
     ["radius below the minimum", { ...fence, radiusMeters: 10 }],
-    ["radius above the maximum", { ...fence, radiusMeters: 1_000_000 }],
+    ["radius above Radar's 10 km cap", { ...fence, radiusMeters: 10_001 }],
     ["fractional radius", { ...fence, radiusMeters: 250.5 }],
     ["radius as a string", { ...fence, radiusMeters: "500" }],
   ])("rejects a destination with %s, naming the field", (_label, value) => {

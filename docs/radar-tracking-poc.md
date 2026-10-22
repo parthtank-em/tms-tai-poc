@@ -1,6 +1,6 @@
 # Radar Geofencing POC — Design
 
-An independent POC that evaluates [Radar](https://radar.com) for trip tracking: geofence entry/exit, trip status (started → approaching → arrived) and ETA. It runs **alongside** the existing geolocation tracking POC (`/tracking`) and shares nothing with it except the console login, the Google Maps key used to draw the map, and the generic UI components.
+An independent POC that evaluates [Radar](https://radar.com) for trip tracking: geofence entry/exit, trip status (started → approaching → arrived) and ETA. It runs **alongside** the existing geolocation tracking POC (`/tracking`) and shares nothing with it except the console login, the Google Maps key used to draw the map, and the generic UI components — and the Radar project itself: `/tracking` also uses Radar, for its geofences only (no trips). Both POCs use the same keys and the same webhook (`/api/webhooks/radar`); the `/tracking` fences are tagged `tms-track-start` / `tms-track-dest`, and the webhook hands those events to `/tracking` before anything else.
 
 Mobile API reference: [radar-tracking-mobile-api.md](./radar-tracking-mobile-api.md).
 

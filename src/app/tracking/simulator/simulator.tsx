@@ -10,6 +10,7 @@ import {
   WifiOffIcon,
 } from "lucide-react";
 import Link from "next/link";
+import type RadarType from "radar-sdk-js";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatDateTimeSeconds } from "@/lib/format";
+import { TRACKING_TAG_TARGET } from "@/lib/tracking/radar";
 
 /**
  * A browser stand-in for the mobile app (plan §14, step 10).
@@ -26,14 +28,16 @@ import { formatDateTimeSeconds } from "@/lib/format";
  * A live send that genuinely fails is queued the same way, so nothing is lost
  * if the dev server restarts mid-run.
  *
- * Geofencing works as it will on the phone: the server only stores the two
- * circles (start and destination), and the simulator itself decides inside or
- * outside of each after every step and reports each crossing as an ENTER or
- * EXIT event naming its target.
+ * Geofencing is **real Radar**: the server creates the two fences in Radar at
+ * Start, and each step sends the position to Radar with the web SDK's
+ * `trackOnce`, as the phone's SDK would. Radar decides inside or outside and
+ * reports crossings to the server by webhook. Unlike the phone SDK, the web SDK
+ * cannot replay offline positions, so Radar sees nothing from an offline
+ * stretch — expect a crossing made offline to be missed, not delayed.
  *
- * Distance and ETA also come from the "phone": straight-line distance to the
+ * Distance and ETA come from the "phone": straight-line distance to the
  * destination and the walk's average speed stand in for the route a real app
- * would get from its maps SDK.
+ * would get from Google.
  */
 
 type Point = { latitude: number; longitude: number };
@@ -47,15 +51,20 @@ type QueuedLocation = Point & {
 
 type Target = "START" | "DESTINATION";
 
-/** `isOffline` is decided when the event is sent, not when it is detected. */
-type QueuedGeofenceEvent = { id: string; type: "ENTER" | "EXIT"; target: Target; capturedAt: string };
-
 type Fence = Point & { radiusMeters: number };
 
 type LogEntry = { at: Date; text: string; tone: "info" | "ok" | "error" };
 
+const PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY;
+
+/** Radar allows one track per second per device; leave headroom. */
+const MIN_INTERVAL_SECONDS = 2;
+
 /** Plan §5.2 says ~2 minutes on a device; a demo wants to see movement sooner. */
 const DEFAULT_INTERVAL_SECONDS = 5;
+
+/** A simulated fix this good, so Radar does not discard it as too inaccurate. */
+const SIMULATED_ACCURACY_METERS = 10;
 
 /** Surat, as in the plan's examples. */
 const DEFAULT_START = { latitude: 21.1702, longitude: 72.8311 };
@@ -76,15 +85,13 @@ const AVERAGE_STEP_METERS = (MIN_STEP_METERS + MAX_STEP_METERS) / 2;
 
 const TARGET_LABEL: Record<Target, string> = { START: "start", DESTINATION: "destination" };
 
-const TARGETS: Target[] = ["START", "DESTINATION"];
-
 const NO_SIDES: Record<Target, boolean | null> = { START: null, DESTINATION: null };
 
 const EARTH_RADIUS_METERS = 6_371_000;
 
 const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
 
-/** Haversine — what the phone's OS geofencing does for us on a real device. */
+/** Haversine — drives the walk and the simulated distance, not the geofencing. */
 function distanceMeters(a: Point, b: Point): number {
   const dLat = toRadians(b.latitude - a.latitude);
   const dLng = toRadians(b.longitude - a.longitude);
@@ -161,22 +168,20 @@ export function Simulator() {
   const [sentCount, setSentCount] = useState(0);
   const [lastBatch, setLastBatch] = useState<QueuedLocation[]>([]);
   const [position, setPosition] = useState<QueuedLocation | null>(null);
-  const [eventQueue, setEventQueue] = useState<QueuedGeofenceEvent[]>([]);
-  const [eventsSent, setEventsSent] = useState(0);
+  const [crossings, setCrossings] = useState(0);
   const [inside, setInside] = useState<Record<Target, boolean | null>>(NO_SIDES);
   const [log, setLog] = useState<LogEntry[]>([]);
 
   // The tick runs from a timer, so it reads the latest values through refs
   // rather than whatever the render that scheduled it happened to capture.
   // Start() replaces this with the chosen start point.
+  const radar = useRef<typeof RadarType | null>(null);
   const walk = useRef<Point>(DEFAULT_START);
   const onlineRef = useRef(online);
   const sessionRef = useRef(sessionId);
   const intervalRef = useRef(intervalSeconds);
-  // The fences the current session was started with, and which side of each
-  // the device was on after the last step (null before the first step).
+  // The fences the current session was started with.
   const fencesRef = useRef<Record<Target, Fence> | null>(null);
-  const insideRef = useRef<Record<Target, boolean | null>>(NO_SIDES);
 
   useEffect(() => {
     onlineRef.current = online;
@@ -192,63 +197,59 @@ export function Simulator() {
     setQueue((current) => [...current, location]);
   }, []);
 
-  /** Sends one crossing live, or queues it when offline or the send fails. */
-  const reportCrossing = useCallback(
-    async (session: string, event: QueuedGeofenceEvent) => {
-      const label = `${event.type === "ENTER" ? "Entered" : "Left"} ${TARGET_LABEL[event.target]} geofence`;
+  /** Loaded on first use: the SDK touches browser globals and must not run on the server. */
+  const loadRadar = useCallback(async (userId: string) => {
+    if (!radar.current) {
+      const { default: Radar } = await import("radar-sdk-js");
+      Radar.initialize(PUBLISHABLE_KEY!);
+      radar.current = Radar;
+    }
+    radar.current.setUserId(userId);
+    return radar.current;
+  }, []);
 
-      if (!onlineRef.current) {
-        setEventQueue((current) => [...current, event]);
-        addLog(`${label} — offline, event queued`);
-        return;
-      }
+  /**
+   * Sends one position to Radar, as the phone's SDK would, and shows what
+   * Radar decided: the crossings it fired and which of this session's fences
+   * the device is now in. The server hears about the crossings by webhook.
+   */
+  const trackWithRadar = useCallback(
+    async (point: Point) => {
+      const Radar = radar.current;
+      if (!Radar) return;
 
       try {
-        const result = await post(`/api/tracking/sessions/${session}/geofence-events`, {
-          events: [{ ...event, isOffline: false }],
+        const { events, user } = await Radar.trackOnce({
+          latitude: point.latitude,
+          longitude: point.longitude,
+          accuracy: SIMULATED_ACCURACY_METERS,
         });
-        if (!result.ok) throw new Error(String(result.json.error ?? `HTTP ${result.status}`));
 
-        setEventsSent((count) => count + 1);
-        addLog(`${label} — event sent`, "ok");
+        const session = sessionRef.current;
+        const ours = (geofence?: { tag?: string; externalId?: string }) =>
+          geofence?.tag && geofence.externalId === session ? TRACKING_TAG_TARGET[geofence.tag] : undefined;
+
+        for (const event of events ?? []) {
+          const target = ours(event.geofence);
+          if (!target) continue;
+          if (event.type !== "user.entered_geofence" && event.type !== "user.exited_geofence") continue;
+
+          setCrossings((count) => count + 1);
+          addLog(
+            `Radar: ${event.type === "user.entered_geofence" ? "entered" : "left"} ${TARGET_LABEL[target]} geofence`,
+            "ok",
+          );
+        }
+
+        if (session) {
+          const current = new Set((user?.geofences ?? []).map(ours));
+          setInside({ START: current.has("START"), DESTINATION: current.has("DESTINATION") });
+        }
       } catch (error) {
-        setEventQueue((current) => [...current, event]);
-        addLog(`${label} — send failed (${(error as Error).message}), event queued`, "error");
+        addLog(`Radar track failed: ${(error as Error).message}`, "error");
       }
     },
     [addLog],
-  );
-
-  /**
-   * Compares the new position against each fence and reports a change of
-   * side. The first position only sets the starting side, except that
-   * starting inside reports an ENTER — as Android's INITIAL_TRIGGER_ENTER
-   * would — so the map has a status from the start.
-   */
-  const checkGeofences = useCallback(
-    async (session: string, location: QueuedLocation) => {
-      const fences = fencesRef.current;
-      if (!fences) return;
-
-      for (const target of TARGETS) {
-        const fence = fences[target];
-        const nowInside = distanceMeters(location, fence) <= fence.radiusMeters;
-        const previous = insideRef.current[target];
-        insideRef.current = { ...insideRef.current, [target]: nowInside };
-
-        if (previous === nowInside || (previous === null && !nowInside)) continue;
-
-        await reportCrossing(session, {
-          id: crypto.randomUUID(),
-          type: nowInside ? "ENTER" : "EXIT",
-          target,
-          capturedAt: location.capturedAt,
-        });
-      }
-
-      setInside(insideRef.current);
-    },
-    [reportCrossing],
   );
 
   const tick = useCallback(async () => {
@@ -271,27 +272,28 @@ export function Simulator() {
 
     if (!onlineRef.current) {
       enqueue(location);
-      addLog(`Offline — queued ${location.latitude}, ${location.longitude}`);
-    } else {
-      try {
-        const result = await post(`/api/tracking/sessions/${session}/locations`, location);
-        if (!result.ok) throw new Error(String(result.json.error ?? `HTTP ${result.status}`));
-
-        setSentCount((count) => count + 1);
-        addLog(`Sent ${location.latitude}, ${location.longitude}`, "ok");
-      } catch (error) {
-        enqueue(location);
-        addLog(`Send failed (${(error as Error).message}) — queued instead`, "error");
-      }
+      addLog(`Offline — queued ${location.latitude}, ${location.longitude} (Radar will not see it)`);
+      return;
     }
 
-    await checkGeofences(session, location);
-  }, [addLog, enqueue, checkGeofences]);
+    await trackWithRadar(next);
+
+    try {
+      const result = await post(`/api/tracking/sessions/${session}/locations`, location);
+      if (!result.ok) throw new Error(String(result.json.error ?? `HTTP ${result.status}`));
+
+      setSentCount((count) => count + 1);
+      addLog(`Sent ${location.latitude}, ${location.longitude}`, "ok");
+    } catch (error) {
+      enqueue(location);
+      addLog(`Send failed (${(error as Error).message}) — queued instead`, "error");
+    }
+  }, [addLog, enqueue, trackWithRadar]);
 
   useEffect(() => {
     if (!running) return;
 
-    const timer = setInterval(tick, Math.max(1, intervalSeconds) * 1000);
+    const timer = setInterval(tick, Math.max(MIN_INTERVAL_SECONDS, intervalSeconds) * 1000);
     return () => clearInterval(timer);
   }, [running, intervalSeconds, tick]);
 
@@ -318,32 +320,18 @@ export function Simulator() {
     return true;
   }
 
-  /** Everything queued goes up with `isOffline: true` — that is what it was. */
-  async function flushEvents(batch: QueuedGeofenceEvent[]): Promise<boolean> {
-    if (!sessionId || batch.length === 0) return true;
-
-    const result = await post(`/api/tracking/sessions/${sessionId}/geofence-events`, {
-      events: batch.map((event) => ({ ...event, isOffline: true })),
-    });
-
-    if (!result.ok) {
-      addLog(`Geofence event upload failed: ${String(result.json.error ?? `HTTP ${result.status}`)}`, "error");
-      return false;
-    }
-
-    const ids = new Set(batch.map((event) => event.id));
-    setEventQueue((current) => current.filter((event) => !ids.has(event.id)));
-    setEventsSent((count) => count + Number(result.json.inserted ?? 0));
-    addLog(
-      `Uploaded ${batch.length} queued geofence event(s): inserted ${String(result.json.inserted)}, skipped ${String(result.json.skipped)}`,
-      "ok",
-    );
-    return true;
-  }
-
   async function start() {
     setBusy(true);
     try {
+      const id = deviceId.trim();
+      await loadRadar(id);
+
+      // Radar creates a user on its first track, and the session's fences are
+      // scoped to that user — so the device reports where it is first.
+      addLog("Tracking the start position so Radar knows the user");
+      sessionRef.current = null;
+      await trackWithRadar({ latitude: startLatitude, longitude: startLongitude });
+
       const fences: Record<Target, Fence> = {
         START: { latitude: startLatitude, longitude: startLongitude, radiusMeters: startRadius },
         DESTINATION: {
@@ -355,7 +343,7 @@ export function Simulator() {
       const planned = progress(fences.START, fences.DESTINATION, intervalSeconds, new Date());
 
       const result = await post("/api/tracking/sessions", {
-        deviceId,
+        deviceId: id,
         start: fences.START,
         destination: fences.DESTINATION,
         distanceMeters: planned.remainingDistanceMeters,
@@ -368,10 +356,8 @@ export function Simulator() {
 
       walk.current = { latitude: startLatitude, longitude: startLongitude };
       fencesRef.current = fences;
-      insideRef.current = NO_SIDES;
       setInside(NO_SIDES);
-      setEventQueue([]);
-      setEventsSent(0);
+      setCrossings(0);
       setSessionId(String(result.json.sessionId));
       sessionRef.current = String(result.json.sessionId);
       setQueue([]);
@@ -386,6 +372,8 @@ export function Simulator() {
 
       // Report the starting fix straight away rather than one interval later.
       await tick();
+    } catch (error) {
+      addLog(`Start failed: ${(error as Error).message}`, "error");
     } finally {
       setBusy(false);
     }
@@ -399,11 +387,10 @@ export function Simulator() {
     try {
       // A real device would flush its queue as soon as it is back online; the
       // simulator does it here so Stop never strands queued points.
-      if (queue.length > 0 || eventQueue.length > 0) {
+      if (queue.length > 0) {
         onlineRef.current = true;
         setOnline(true);
         if (!(await flush(queue))) return;
-        if (!(await flushEvents(eventQueue))) return;
       }
 
       const result = await post(`/api/tracking/sessions/${sessionId}/stop`);
@@ -424,7 +411,7 @@ export function Simulator() {
     if (online) {
       onlineRef.current = false;
       setOnline(false);
-      addLog("Connection lost — new points will be queued on the device");
+      addLog("Connection lost — new points will be queued on the device, Radar gets nothing");
       return;
     }
 
@@ -434,7 +421,6 @@ export function Simulator() {
     setBusy(true);
     try {
       await flush(queue);
-      await flushEvents(eventQueue);
     } finally {
       setBusy(false);
     }
@@ -451,6 +437,21 @@ export function Simulator() {
 
   const active = running && sessionId !== null;
 
+  if (!PUBLISHABLE_KEY) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Radar is not configured</CardTitle>
+          <CardDescription>
+            Geofencing runs on Radar. Set <code className="font-mono">NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY</code>{" "}
+            (and the other Radar variables in <code className="font-mono">.env.example</code>) and
+            restart the dev server.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
       <Card>
@@ -459,7 +460,11 @@ export function Simulator() {
           <CardDescription>Settings apply to the next Start.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
-          <Field id="deviceId" label="Device id">
+          <Field
+            id="deviceId"
+            label="Device id"
+            hint="Becomes the Radar userId. Each distinct id is a tracked user in Radar's billing."
+          >
             <Input
               id="deviceId"
               value={deviceId}
@@ -471,14 +476,16 @@ export function Simulator() {
           <Field
             id="interval"
             label="Send every (seconds)"
-            hint="A real device sends about every 120 s."
+            hint={`A real device sends about every 120 s. Minimum ${MIN_INTERVAL_SECONDS} s — Radar allows one track per second per device.`}
           >
             <Input
               id="interval"
               type="number"
-              min={1}
+              min={MIN_INTERVAL_SECONDS}
               value={intervalSeconds}
-              onChange={(event) => setIntervalSeconds(Number(event.target.value) || 1)}
+              onChange={(event) =>
+                setIntervalSeconds(Math.max(MIN_INTERVAL_SECONDS, Number(event.target.value) || 0))
+              }
             />
           </Field>
 
@@ -576,9 +583,7 @@ export function Simulator() {
             <Stat label="ETA">
               {position ? formatDateTimeSeconds(new Date(position.eta)) : "—"}
             </Stat>
-            <Stat label="Geofence events">
-              {eventsSent} sent · {eventQueue.length} queued
-            </Stat>
+            <Stat label="Radar crossings">{crossings}</Stat>
             <Stat label="Current position">
               {position ? (
                 <span className="font-mono text-xs">
@@ -589,6 +594,12 @@ export function Simulator() {
               )}
             </Stat>
           </dl>
+
+          <p className="mt-4 border-t pt-4 text-xs text-muted-foreground">
+            Geofence state and crossings here come straight from Radar&apos;s track response. The
+            session page shows what arrived by webhook — if this updates and the page does not, the
+            webhook is not reaching the app.
+          </p>
 
           <div className="mt-4 border-t pt-4">
             <p className="mb-2 text-sm text-muted-foreground">

@@ -25,10 +25,10 @@ export const MAX_BULK_GEOFENCE_EVENTS = 1_000;
 
 /**
  * Below ~50 m ordinary GPS drift puts a parked device in and out of the fence;
- * the upper bound only refuses obvious unit mistakes (km sent as m).
+ * Radar, which evaluates the fences, caps a circle at 10 km.
  */
 export const MIN_GEOFENCE_RADIUS_METERS = 50;
-export const MAX_GEOFENCE_RADIUS_METERS = 100_000;
+export const MAX_GEOFENCE_RADIUS_METERS = 10_000;
 
 const GEOFENCE_EVENT_TYPES = ["ENTER", "EXIT"] as const;
 const GEOFENCE_TARGETS = ["START", "DESTINATION"] as const;

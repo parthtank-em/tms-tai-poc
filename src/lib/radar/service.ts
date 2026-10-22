@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 
-import { createTrip, deleteGeofence, updateTripStatus, upsertGeofence } from "./client";
+import { createTrip, deleteGeofence, tripGeofence, updateTripStatus, upsertGeofence } from "./client";
 import { getRadarConfig } from "./config";
 import { tripUpdates, type MappedEvent } from "./mapper";
 import {
@@ -132,14 +132,23 @@ export async function startTrip(input: StartTripInput): Promise<StartTripResult>
 
   const fail = async (message: string): Promise<StartTripResult> => {
     // Best effort: a fence that was never created just 404s.
-    await Promise.all([deleteGeofence(config, id, "START"), deleteGeofence(config, id, "DESTINATION")]);
+    await Promise.all([
+      deleteGeofence(config, tripGeofence(id, "START")),
+      deleteGeofence(config, tripGeofence(id, "DESTINATION")),
+    ]);
     await prisma.radarTrip.delete({ where: { id } });
     return { outcome: "radar_failed", message };
   };
 
   const fences = await Promise.all([
-    upsertGeofence(config, id, "START", start, deviceId),
-    upsertGeofence(config, id, "DESTINATION", destination, deviceId),
+    upsertGeofence(config, tripGeofence(id, "START"), start, deviceId, {
+      description: `Start of trip ${id}`,
+      metadata: { tripId: id },
+    }),
+    upsertGeofence(config, tripGeofence(id, "DESTINATION"), destination, deviceId, {
+      description: `Destination of trip ${id}`,
+      metadata: { tripId: id },
+    }),
   ]);
   const fenceError = fences.find((result) => !result.ok);
   if (fenceError && !fenceError.ok) return fail(fenceError.message);
@@ -252,8 +261,8 @@ async function closeRadarTrip(tripId: string): Promise<void> {
     alreadyClosed
       ? Promise.resolve({ ok: true as const, data: null })
       : updateTripStatus(config, tripId, "completed"),
-    deleteGeofence(config, tripId, "START"),
-    deleteGeofence(config, tripId, "DESTINATION"),
+    deleteGeofence(config, tripGeofence(tripId, "START")),
+    deleteGeofence(config, tripGeofence(tripId, "DESTINATION")),
   ]);
 
   const errors = [trip, ...fences].flatMap((result) => (result.ok ? [] : [result.message]));

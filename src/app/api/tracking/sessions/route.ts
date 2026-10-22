@@ -1,5 +1,6 @@
 import { getSession } from "@/lib/auth/guard";
 import { badRequest, readJson } from "@/lib/tracking/http";
+import { TRACKING_DESTINATION_GEOFENCE_TAG, TRACKING_START_GEOFENCE_TAG } from "@/lib/tracking/radar";
 import { listSessions, startSession } from "@/lib/tracking/service";
 import { parseStartSession } from "@/lib/tracking/validation";
 
@@ -7,9 +8,10 @@ import { parseStartSession } from "@/lib/tracking/validation";
  * `POST /api/tracking/sessions` — the device pressed Start.
  *
  * `start` and `destination` are required, each a point with a geofence
- * radius. Both are echoed back so the device can register the same two
- * circles with the OS geofencing API. `distanceMeters` and `eta` are the
- * phone's own route figures; the server stores them as reported.
+ * radius. The server creates both circles in Radar, scoped to `deviceId`, and
+ * Radar reports the crossings by webhook — the device only runs the Radar SDK.
+ * `distanceMeters` and `eta` are the phone's own route figures (Google); the
+ * server stores them as reported.
  *
  * Unauthenticated: authentication is out of scope for this POC (plan §1), and
  * the mobile app has no console session to present. Revisit before anything
@@ -19,7 +21,22 @@ export async function POST(request: Request): Promise<Response> {
   const parsed = parseStartSession(await readJson(request));
   if (!parsed.ok) return badRequest(parsed.error);
 
-  const session = await startSession(parsed.value);
+  const result = await startSession(parsed.value);
+
+  if (result.outcome === "unconfigured") {
+    return Response.json(
+      {
+        success: false,
+        error: "Radar is not configured on the server (RADAR_SECRET_KEY, NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY).",
+      },
+      { status: 503 },
+    );
+  }
+  if (result.outcome === "radar_failed") {
+    return Response.json({ success: false, error: result.message }, { status: 502 });
+  }
+
+  const { session } = result;
 
   return Response.json(
     {
@@ -30,6 +47,12 @@ export async function POST(request: Request): Promise<Response> {
       destination: session.destination,
       distanceMeters: session.distanceMeters,
       eta: session.eta,
+      radar: {
+        userId: session.deviceId,
+        startGeofenceTag: TRACKING_START_GEOFENCE_TAG,
+        destinationGeofenceTag: TRACKING_DESTINATION_GEOFENCE_TAG,
+        geofenceExternalId: session.id,
+      },
     },
     { status: 201 },
   );

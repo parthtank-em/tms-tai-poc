@@ -2,7 +2,7 @@
 
 For developers building the mobile app against the **Radar POC** (`/radar-tracking`). This is separate from the geolocation tracking POC described in [geo-location-tracking-mobile-api.md](./geo-location-tracking-mobile-api.md); the two share no endpoints or data.
 
-Design background: [radar-tracking-poc.md](./radar-tracking-poc.md).
+Design background: [radar-tracking-poc.md](./radar-tracking-poc.md). Short step-by-step version of the app flow: [radar-tracking-mobile-flow.md](./radar-tracking-mobile-flow.md).
 
 ---
 

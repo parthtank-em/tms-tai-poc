@@ -84,18 +84,14 @@ const DASHES: google.maps.IconSequence[] = [
  * Loads Google Maps once for everything inside it: the map and, on the
  * planner, the address boxes (Google Places). Wrap the page section in it.
  */
-export function GoogleMapsProvider({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export function GoogleMapsProvider({ children }: { children: React.ReactNode }) {
   if (!API_KEY) {
     return (
       <div className="rounded-xl border p-6 text-center text-sm">
         <p className="font-medium">Google Maps is not configured.</p>
         <p className="mt-1 text-muted-foreground">
-          Set <code className="font-mono">NEXT_PUBLIC_GOOGLE_MAPS_API_KEY</code>{" "}
-          in <code className="font-mono">.env</code> and restart the dev server.
+          Set <code className="font-mono">NEXT_PUBLIC_GOOGLE_MAPS_API_KEY</code> in{" "}
+          <code className="font-mono">.env</code> and restart the dev server.
         </p>
       </div>
     );
@@ -170,11 +166,7 @@ export function TripMapView({
           title={marker.text}
           onClick={() => setOpenMarker(marker)}
         >
-          <Pin
-            background={marker.color}
-            borderColor="#ffffff"
-            glyphColor="#ffffff"
-          />
+          <Pin background={marker.color} borderColor="#ffffff" glyphColor="#ffffff" />
         </AdvancedMarker>
       ))}
 
@@ -214,8 +206,7 @@ function FitToShapes({
     for (const fence of fences) {
       // A circle's box: its radius in degrees of latitude and longitude.
       const latitudeRadius = fence.geofence.radiusMeters / 111_320;
-      const longitudeRadius =
-        latitudeRadius / Math.cos((fence.geofence.latitude * Math.PI) / 180);
+      const longitudeRadius = latitudeRadius / Math.cos((fence.geofence.latitude * Math.PI) / 180);
       bounds.extend({
         lat: fence.geofence.latitude - latitudeRadius,
         lng: fence.geofence.longitude - longitudeRadius,

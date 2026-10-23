@@ -10,15 +10,20 @@ Mobile API reference: [radar-tracking-mobile-api.md](./radar-tracking-mobile-api
 
 ## 1. What changes compared with `/tracking`
 
-| | `/tracking` (existing) | `/radar-tracking` (this POC) |
+The two POCs now work the same way — portal (or optional phone) planning, Start by one phone creating two Radar fences and a Radar trip, live ETA and trip status by webhook, the same pages and the same mobile API shapes. **The one difference is where the planned route comes from:**
+
+| | `/tracking` | `/radar-tracking` (this POC) |
 |---|---|---|
-| Who picks source, destination and fences | The phone, on Start | Whoever plans the trip — the portal, or the phone with `POST /trips` — before anyone starts it |
-| Map | Google Maps | Google Maps, drawing Radar's route, geofences and events |
-| Who decides inside/outside a fence | Radar, from the locations its SDK tracks (fences tagged `tms-track-*`, crossings by webhook) | Radar, from the locations its SDK tracks (fences tagged `tms-radar-*`, crossings by webhook) |
-| ETA / remaining distance | Computed on the phone (Google Routes API), sent with each location | Radar trip ETA (car mode), delivered by webhook |
-| Trip status | Inferred from events by a person reading the map | Radar trip status: started, approaching, arrived, completed… |
-| Offline | Radar SDK replays offline locations to Radar, so crossings arrive late by webhook; our own queue only for locations | Radar SDK replays offline locations to Radar (`replay: all`); our own queue only for the route line |
-| Route line on the map | Every location the phone posts | The same — the phone forwards each Radar SDK location to us (Radar has no per-location webhook) |
+| Planned route, distance, ETA (Preview / Submit / `POST` create) | **Google Routes API** — drive, traffic-aware | **Radar route API** — truck |
+
+Everything else is the same, with each POC under its own names:
+
+| | `/tracking` | `/radar-tracking` |
+|---|---|---|
+| API paths | `/api/tracking/sessions/…` | `/api/radar-tracking/trips/…` |
+| Fence tags | `tms-track-start` / `tms-track-dest` | `tms-radar-start` / `tms-radar-dest` |
+| Radar trip `externalId` | `tms-track-{sessionId}` | `{tripId}` |
+| Tables | `tracking_sessions`, `tracking_locations`, `tracking_events` | `radar_trips`, `radar_trip_locations`, `radar_events` |
 
 ## 2. Isolation
 
@@ -107,16 +112,16 @@ The trip page draws, on a Google map: both fences, the **planned route** (dashed
 3. **Settings → SDK / remote tracking options:** enable offline replay (`replay: all`).
 4. **Integrations → Webhooks:** add `https://<tunnel>/api/webhooks/radar`, environment Test, delivery **Multiple Events**. Copy the webhook's security token into `RADAR_WEBHOOK_TOKEN`. Radar cannot reach `localhost`, so use an ngrok or Cloudflare tunnel in development, as with Jumio.
 
-   Enable these event types. The webhook is shared with `/tracking`, so the list covers both POCs:
+   Enable these event types. The webhook is shared with `/tracking`, which uses the same ones:
 
-   | Event | Used by | What it drives |
-   |---|---|---|
-   | `user.entered_geofence` | Both | `/tracking`: ENTER crossing. `/radar-tracking`: "Entered … geofence" on the map. |
-   | `user.exited_geofence` | Both | `/tracking`: EXIT crossing. `/radar-tracking`: `departedAt` (start fence). |
-   | `user.updated_trip` | `/radar-tracking` | Trip status and ETA while driving. |
-   | `user.approaching_trip_destination` | `/radar-tracking` | Status `approaching`, plus ETA. |
-   | `user.arrived_at_trip_destination` | `/radar-tracking` | Status `arrived` and `arrivedAt`. |
-   | `user.stopped_trip` | `/radar-tracking` | Final status when Radar closes the trip itself (e.g. expiry). |
+   | Event | What it drives (same in both POCs) |
+   |---|---|
+   | `user.entered_geofence` | "Entered … geofence" on the map. |
+   | `user.exited_geofence` | `departedAt` (start fence). |
+   | `user.updated_trip` | Trip status and ETA while driving. |
+   | `user.approaching_trip_destination` | Status `approaching`, plus ETA. |
+   | `user.arrived_at_trip_destination` | Status `arrived` and `arrivedAt`. |
+   | `user.stopped_trip` | Final status when Radar closes the trip itself (e.g. expiry). |
 
    Other event types are not needed. If Radar sends them anyway, the webhook acknowledges and drops the ones that belong to neither POC. `user.started_trip` is not needed because the trip's first status comes from Radar's response to `POST /v1/trips`.
 

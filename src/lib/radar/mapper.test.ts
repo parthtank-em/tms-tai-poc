@@ -123,6 +123,34 @@ describe("tripUpdates", () => {
     expect(update?.latest?.at.toISOString()).toBe("2026-10-21T09:10:00.000Z");
   });
 
+  it("keeps an earlier event's ETA when the newest one has none, in either order", () => {
+    const approaching = mapEvent(
+      tripEvent({
+        _id: "ap",
+        actualCreatedAt: "2026-10-21T09:25:00Z",
+        trip: { externalId: TRIP, status: "approaching", eta: { duration: 4.5, distance: 1200 } },
+      }),
+      USER,
+    )!;
+    const arrived = mapEvent(
+      tripEvent({
+        _id: "ar",
+        type: "user.arrived_at_trip_destination",
+        actualCreatedAt: "2026-10-21T09:30:00Z",
+        trip: { externalId: TRIP, status: "arrived" },
+      }),
+      USER,
+    )!;
+
+    for (const delivery of [[approaching, arrived], [arrived, approaching]]) {
+      expect(tripUpdates(delivery).get(TRIP)?.latest).toMatchObject({
+        status: "ARRIVED",
+        etaMinutes: 4.5,
+        etaDistanceMeters: 1200,
+      });
+    }
+  });
+
   it("records the earliest start exit and the earliest arrival", () => {
     const exitLate = mapEvent(geofenceEvent({ _id: "e2", actualCreatedAt: "2026-10-21T09:20:00Z" }), USER)!;
     const exitEarly = mapEvent(geofenceEvent({ _id: "e1" }), USER)!;

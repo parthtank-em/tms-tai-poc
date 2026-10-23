@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  ExternalLinkIcon,
-  PlayIcon,
-  RotateCcwIcon,
-  SendIcon,
-  SquareIcon,
-  WifiIcon,
-  WifiOffIcon,
-} from "lucide-react";
+import { ExternalLinkIcon, PlayIcon, RefreshCwIcon, SendIcon, SquareIcon, WifiIcon, WifiOffIcon } from "lucide-react";
 import Link from "next/link";
 import type RadarType from "radar-sdk-js";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -17,41 +9,38 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { formatDateTimeSeconds } from "@/lib/format";
-import { TRACKING_TAG_TARGET } from "@/lib/tracking/radar";
+import { endLabel, eventLabel, formatDistance, formatMinutes } from "@/lib/tracking/display";
+import type { GeofenceTarget, SessionView } from "@/lib/tracking/types";
 
 /**
- * A browser stand-in for the mobile app (plan §14, step 10).
+ * A browser stand-in for the mobile app, driving **real Radar** — a copy of the
+ * Radar POC's simulator (src/app/radar-tracking/simulator) for /tracking.
  *
- * "Offline" is simulated: the network is still there, the simulator just stops
- * sending and queues instead — which is what the device's local queue does.
- * A live send that genuinely fails is queued the same way, so nothing is lost
- * if the dev server restarts mid-run.
+ * Like the app, it lists the trips planned on the portal and starts one; the
+ * server then creates that trip's fences and Radar trip for this device.
  *
- * Geofencing is **real Radar**: the server creates the two fences in Radar at
- * Start, and each step sends the position to Radar with the web SDK's
- * `trackOnce`, as the phone's SDK would. Radar decides inside or outside and
- * reports crossings to the server by webhook. Unlike the phone SDK, the web SDK
- * cannot replay offline positions, so Radar sees nothing from an offline
- * stretch — expect a crossing made offline to be missed, not delayed.
+ * Each step sends the simulated position to Radar with the web SDK's
+ * `trackOnce({ latitude, longitude })`, exactly as the phone's SDK would track
+ * it, so Radar evaluates the fences and the trip and fires real webhooks. The
+ * same position is forwarded to our locations endpoint for the route line,
+ * which is what the app does from its location listener.
  *
- * Distance and ETA come from the "phone": straight-line distance to the
- * destination and the walk's average speed stand in for the route a real app
- * would get from Google.
+ * Unlike the phone SDK, the web SDK cannot replay offline locations. "Offline"
+ * here queues route points for a bulk upload, but Radar never sees the
+ * positions from that stretch — expect a gap in Radar's events, not in the line.
  */
 
 type Point = { latitude: number; longitude: number };
 
-type QueuedLocation = Point & {
-  id: string;
-  capturedAt: string;
-  remainingDistanceMeters: number;
-  eta: string;
-};
-
-type Target = "START" | "DESTINATION";
-
-type Fence = Point & { radiusMeters: number };
+type QueuedLocation = Point & { id: string; accuracy: number; capturedAt: string };
 
 type LogEntry = { at: Date; text: string; tone: "info" | "ok" | "error" };
 
@@ -59,39 +48,18 @@ const PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY;
 
 /** Radar allows one track per second per device; leave headroom. */
 const MIN_INTERVAL_SECONDS = 2;
-
-/** Plan §5.2 says ~2 minutes on a device; a demo wants to see movement sooner. */
 const DEFAULT_INTERVAL_SECONDS = 5;
 
 /** A simulated fix this good, so Radar does not discard it as too inaccurate. */
 const SIMULATED_ACCURACY_METERS = 10;
 
-/** Surat, as in the plan's examples. */
-const DEFAULT_START = { latitude: 21.1702, longitude: 72.8311 };
-
-/** About 2 km north-east — a couple of minutes of walk at the default interval. */
-const DEFAULT_DESTINATION = { latitude: 21.1832, longitude: 72.8441 };
-
 const METERS_PER_DEGREE = 111_320;
-
-/** A few steps of the walk, so a run shows the exit from the start fairly soon. */
-const DEFAULT_START_RADIUS_METERS = 300;
-const DEFAULT_DESTINATION_RADIUS_METERS = 300;
-
-/** Each step moves 80–200 m; the midpoint drives the simulated ETA. */
 const MIN_STEP_METERS = 80;
 const MAX_STEP_METERS = 200;
-const AVERAGE_STEP_METERS = (MIN_STEP_METERS + MAX_STEP_METERS) / 2;
-
-const TARGET_LABEL: Record<Target, string> = { START: "start", DESTINATION: "destination" };
-
-const NO_SIDES: Record<Target, boolean | null> = { START: null, DESTINATION: null };
-
 const EARTH_RADIUS_METERS = 6_371_000;
 
 const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
 
-/** Haversine — drives the walk and the simulated distance, not the geofencing. */
 function distanceMeters(a: Point, b: Point): number {
   const dLat = toRadians(b.latitude - a.latitude);
   const dLng = toRadians(b.longitude - a.longitude);
@@ -101,39 +69,37 @@ function distanceMeters(a: Point, b: Point): number {
   return 2 * EARTH_RADIUS_METERS * Math.asin(Math.sqrt(h));
 }
 
-/** Heading from `a` to `b`, in radians clockwise from north — the walk's convention. */
-function bearing(a: Point, b: Point): number {
-  const north = b.latitude - a.latitude;
-  const east = (b.longitude - a.longitude) * Math.cos(toRadians(a.latitude));
-  return Math.atan2(east, north);
-}
-
 /**
- * A walk that wanders but drifts toward the destination, so the route looks
- * like a vehicle on roads and eventually arrives. Within one step it parks on
- * the destination, so it does not circle the fence and flap ENTER/EXIT.
+ * A walk that wanders but drifts toward the destination and parks on it once
+ * within a step, so it arrives rather than circling the fence.
  */
 function nextPosition(from: Point, destination: Point): Point {
-  const remaining = distanceMeters(from, destination);
-  if (remaining <= MAX_STEP_METERS) return destination;
+  if (distanceMeters(from, destination) <= MAX_STEP_METERS) return destination;
 
-  const heading = bearing(from, destination) + (Math.random() - 0.5) * (Math.PI / 2);
+  const north = destination.latitude - from.latitude;
+  const east = (destination.longitude - from.longitude) * Math.cos(toRadians(from.latitude));
+  const heading = Math.atan2(east, north) + (Math.random() - 0.5) * (Math.PI / 2);
   const meters = MIN_STEP_METERS + Math.random() * (MAX_STEP_METERS - MIN_STEP_METERS);
-  const latitude = from.latitude + (meters * Math.cos(heading)) / METERS_PER_DEGREE;
-  const longitude =
-    from.longitude +
-    (meters * Math.sin(heading)) / (METERS_PER_DEGREE * Math.cos(toRadians(from.latitude)));
 
   const round = (value: number) => Math.round(value * 1e7) / 1e7;
-  return { latitude: round(latitude), longitude: round(longitude) };
+  return {
+    latitude: round(from.latitude + (meters * Math.cos(heading)) / METERS_PER_DEGREE),
+    longitude: round(
+      from.longitude +
+        (meters * Math.sin(heading)) / (METERS_PER_DEGREE * Math.cos(toRadians(from.latitude))),
+    ),
+  };
 }
 
-/** What the phone would report: distance left, and when it gets there at the walk's pace. */
-function progress(from: Point, destination: Point, intervalSeconds: number, now: Date) {
-  const remainingDistanceMeters = Math.round(distanceMeters(from, destination));
-  const metersPerSecond = AVERAGE_STEP_METERS / Math.max(1, intervalSeconds);
-  const eta = new Date(now.getTime() + (remainingDistanceMeters / metersPerSecond) * 1000);
-  return { remainingDistanceMeters, eta: eta.toISOString() };
+const TAG_TARGET: Record<string, GeofenceTarget> = {
+  "tms-track-start": "START",
+  "tms-track-dest": "DESTINATION",
+};
+
+async function fetchPlannedTrips(): Promise<SessionView[]> {
+  const response = await fetch("/api/tracking/sessions?status=PLANNED", { cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()) as SessionView[];
 }
 
 async function post(
@@ -151,51 +117,60 @@ async function post(
 }
 
 export function Simulator() {
-  const [deviceId, setDeviceId] = useState("simulator-device-1");
+  const [deviceId, setDeviceId] = useState("radar-simulator-1");
   const [intervalSeconds, setIntervalSeconds] = useState(DEFAULT_INTERVAL_SECONDS);
-  const [startLatitude, setStartLatitude] = useState(DEFAULT_START.latitude);
-  const [startLongitude, setStartLongitude] = useState(DEFAULT_START.longitude);
-  const [startRadius, setStartRadius] = useState(DEFAULT_START_RADIUS_METERS);
-  const [destinationLatitude, setDestinationLatitude] = useState(DEFAULT_DESTINATION.latitude);
-  const [destinationLongitude, setDestinationLongitude] = useState(DEFAULT_DESTINATION.longitude);
-  const [destinationRadius, setDestinationRadius] = useState(DEFAULT_DESTINATION_RADIUS_METERS);
+  const [plannedTrips, setPlannedTrips] = useState<SessionView[] | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [tripId, setTripId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [online, setOnline] = useState(true);
   const [busy, setBusy] = useState(false);
   const [queue, setQueue] = useState<QueuedLocation[]>([]);
-  const [sentCount, setSentCount] = useState(0);
-  const [lastBatch, setLastBatch] = useState<QueuedLocation[]>([]);
-  const [position, setPosition] = useState<QueuedLocation | null>(null);
-  const [crossings, setCrossings] = useState(0);
-  const [inside, setInside] = useState<Record<Target, boolean | null>>(NO_SIDES);
+  const [position, setPosition] = useState<Point | null>(null);
+  const [radarTrip, setRadarTrip] = useState<{ status: string; minutes?: number; meters?: number } | null>(
+    null,
+  );
   const [log, setLog] = useState<LogEntry[]>([]);
 
-  // The tick runs from a timer, so it reads the latest values through refs
-  // rather than whatever the render that scheduled it happened to capture.
-  // Start() replaces this with the chosen start point.
+  // The tick runs from a timer, so it reads the latest values through refs.
   const radar = useRef<typeof RadarType | null>(null);
-  const walk = useRef<Point>(DEFAULT_START);
+  const walk = useRef<Point | null>(null);
+  const destinationRef = useRef<Point | null>(null);
   const onlineRef = useRef(online);
-  const sessionRef = useRef(sessionId);
-  const intervalRef = useRef(intervalSeconds);
-  // The fences the current session was started with.
-  const fencesRef = useRef<Record<Target, Fence> | null>(null);
+  const tripRef = useRef(tripId);
 
   useEffect(() => {
     onlineRef.current = online;
-    sessionRef.current = sessionId;
-    intervalRef.current = intervalSeconds;
-  }, [online, sessionId, intervalSeconds]);
+    tripRef.current = tripId;
+  }, [online, tripId]);
 
   const addLog = useCallback((text: string, tone: LogEntry["tone"] = "info") => {
-    setLog((entries) => [{ at: new Date(), text, tone }, ...entries].slice(0, 100));
+    setLog((entries) => [{ at: new Date(), text, tone }, ...entries].slice(0, 150));
   }, []);
 
-  const enqueue = useCallback((location: QueuedLocation) => {
-    setQueue((current) => [...current, location]);
-  }, []);
+  /** The trips a phone could start, as the app's trip list shows them. */
+  const loadPlannedTrips = useCallback(
+    () =>
+      fetchPlannedTrips().then(
+        (trips) => {
+          setPlannedTrips(trips);
+          setSelectedId((current) =>
+            current && trips.some((trip) => trip.id === current) ? current : (trips[0]?.id ?? null),
+          );
+        },
+        (error: Error) => {
+          setPlannedTrips([]);
+          addLog(`Could not load planned trips: ${error.message}`, "error");
+        },
+      ),
+    [addLog],
+  );
+
+  // Fetched once on mount, like the app's list screen.
+  useEffect(() => {
+    void loadPlannedTrips();
+  }, [loadPlannedTrips]);
 
   /** Loaded on first use: the SDK touches browser globals and must not run on the server. */
   const loadRadar = useCallback(async (userId: string) => {
@@ -208,11 +183,7 @@ export function Simulator() {
     return radar.current;
   }, []);
 
-  /**
-   * Sends one position to Radar, as the phone's SDK would, and shows what
-   * Radar decided: the crossings it fired and which of this session's fences
-   * the device is now in. The server hears about the crossings by webhook.
-   */
+  /** Sends one position to Radar and logs what Radar decided about it. */
   const trackWithRadar = useCallback(
     async (point: Point) => {
       const Radar = radar.current;
@@ -225,25 +196,14 @@ export function Simulator() {
           accuracy: SIMULATED_ACCURACY_METERS,
         });
 
-        const session = sessionRef.current;
-        const ours = (geofence?: { tag?: string; externalId?: string }) =>
-          geofence?.tag && geofence.externalId === session ? TRACKING_TAG_TARGET[geofence.tag] : undefined;
-
         for (const event of events ?? []) {
-          const target = ours(event.geofence);
-          if (!target) continue;
-          if (event.type !== "user.entered_geofence" && event.type !== "user.exited_geofence") continue;
-
-          setCrossings((count) => count + 1);
-          addLog(
-            `Radar: ${event.type === "user.entered_geofence" ? "entered" : "left"} ${TARGET_LABEL[target]} geofence`,
-            "ok",
-          );
+          const target = event.geofence?.tag ? (TAG_TARGET[event.geofence.tag] ?? null) : null;
+          addLog(`Radar: ${eventLabel({ type: event.type, target })}`, "ok");
         }
 
-        if (session) {
-          const current = new Set((user?.geofences ?? []).map(ours));
-          setInside({ START: current.has("START"), DESTINATION: current.has("DESTINATION") });
+        const trip = user?.trip;
+        if (trip) {
+          setRadarTrip({ status: trip.status, minutes: trip.eta?.duration, meters: trip.eta?.distance });
         }
       } catch (error) {
         addLog(`Radar track failed: ${(error as Error).message}`, "error");
@@ -253,42 +213,37 @@ export function Simulator() {
   );
 
   const tick = useCallback(async () => {
-    const session = sessionRef.current;
-    const fences = fencesRef.current;
-    if (!session || !fences) return;
+    const trip = tripRef.current;
+    if (!trip || !walk.current || !destinationRef.current) return;
 
-    const next = nextPosition(walk.current, fences.DESTINATION);
+    const next = nextPosition(walk.current, destinationRef.current);
     walk.current = next;
+    setPosition(next);
 
-    const now = new Date();
     const location: QueuedLocation = {
       id: crypto.randomUUID(),
-      latitude: next.latitude,
-      longitude: next.longitude,
-      capturedAt: now.toISOString(),
-      ...progress(next, fences.DESTINATION, intervalRef.current, now),
+      ...next,
+      accuracy: SIMULATED_ACCURACY_METERS,
+      capturedAt: new Date().toISOString(),
     };
-    setPosition(location);
 
     if (!onlineRef.current) {
-      enqueue(location);
-      addLog(`Offline — queued ${location.latitude}, ${location.longitude} (Radar will not see it)`);
+      setQueue((current) => [...current, location]);
+      addLog(`Offline — queued ${next.latitude}, ${next.longitude} (Radar will not see it)`);
       return;
     }
 
     await trackWithRadar(next);
 
     try {
-      const result = await post(`/api/tracking/sessions/${session}/locations`, location);
+      const result = await post(`/api/tracking/sessions/${trip}/locations`, location);
       if (!result.ok) throw new Error(String(result.json.error ?? `HTTP ${result.status}`));
-
-      setSentCount((count) => count + 1);
-      addLog(`Sent ${location.latitude}, ${location.longitude}`, "ok");
+      addLog(`Sent ${next.latitude}, ${next.longitude}`);
     } catch (error) {
-      enqueue(location);
-      addLog(`Send failed (${(error as Error).message}) — queued instead`, "error");
+      setQueue((current) => [...current, location]);
+      addLog(`Route point send failed (${(error as Error).message}) — queued`, "error");
     }
-  }, [addLog, enqueue, trackWithRadar]);
+  }, [addLog, trackWithRadar]);
 
   useEffect(() => {
     if (!running) return;
@@ -297,10 +252,10 @@ export function Simulator() {
     return () => clearInterval(timer);
   }, [running, intervalSeconds, tick]);
 
-  async function flush(batch: QueuedLocation[], label = "Uploaded"): Promise<boolean> {
-    if (!sessionId || batch.length === 0) return true;
+  async function flush(batch: QueuedLocation[]): Promise<boolean> {
+    if (!tripId || batch.length === 0) return true;
 
-    const result = await post(`/api/tracking/sessions/${sessionId}/locations/bulk`, {
+    const result = await post(`/api/tracking/sessions/${tripId}/locations/bulk`, {
       locations: batch,
     });
 
@@ -311,66 +266,46 @@ export function Simulator() {
 
     const ids = new Set(batch.map((location) => location.id));
     setQueue((current) => current.filter((location) => !ids.has(location.id)));
-    setLastBatch(batch);
-    setSentCount((count) => count + Number(result.json.inserted ?? 0));
     addLog(
-      `${label} ${batch.length} queued point(s): inserted ${String(result.json.inserted)}, skipped ${String(result.json.skipped)}`,
+      `Uploaded ${batch.length} queued point(s): inserted ${String(result.json.inserted)}, skipped ${String(result.json.skipped)}`,
       "ok",
     );
     return true;
   }
 
-  async function start() {
+  async function startTrip() {
+    const selected = plannedTrips?.find((trip) => trip.id === selectedId);
+    if (!selected) return;
+
     setBusy(true);
     try {
       const id = deviceId.trim();
       await loadRadar(id);
 
-      // Radar creates a user on its first track, and the session's fences are
-      // scoped to that user — so the device reports where it is first.
+      // Radar creates a user on its first track, and the fences and trip the
+      // server creates below name that user — so the device reports where it
+      // is before pressing Start.
       addLog("Tracking the start position so Radar knows the user");
-      sessionRef.current = null;
-      await trackWithRadar({ latitude: startLatitude, longitude: startLongitude });
+      await trackWithRadar(selected.start);
 
-      const fences: Record<Target, Fence> = {
-        START: { latitude: startLatitude, longitude: startLongitude, radiusMeters: startRadius },
-        DESTINATION: {
-          latitude: destinationLatitude,
-          longitude: destinationLongitude,
-          radiusMeters: destinationRadius,
-        },
-      };
-      const planned = progress(fences.START, fences.DESTINATION, intervalSeconds, new Date());
-
-      const result = await post("/api/tracking/sessions", {
-        deviceId: id,
-        start: fences.START,
-        destination: fences.DESTINATION,
-        distanceMeters: planned.remainingDistanceMeters,
-        eta: planned.eta,
-      });
+      const result = await post(`/api/tracking/sessions/${selected.id}/start`, { deviceId: id });
       if (!result.ok) {
         addLog(`Start failed: ${String(result.json.error ?? `HTTP ${result.status}`)}`, "error");
+        if (result.status === 409 || result.status === 404) await loadPlannedTrips();
         return;
       }
 
-      walk.current = { latitude: startLatitude, longitude: startLongitude };
-      fencesRef.current = fences;
-      setInside(NO_SIDES);
-      setCrossings(0);
-      setSessionId(String(result.json.sessionId));
-      sessionRef.current = String(result.json.sessionId);
+      const newTripId = String(result.json.sessionId);
+      walk.current = { latitude: selected.start.latitude, longitude: selected.start.longitude };
+      destinationRef.current = selected.destination;
+      tripRef.current = newTripId;
+      setTripId(newTripId);
       setQueue([]);
-      setLastBatch([]);
-      setSentCount(0);
       setPosition(null);
+      setRadarTrip(result.json.tripStatus ? { status: String(result.json.tripStatus).toLowerCase() } : null);
       setRunning(true);
-      addLog(
-        `Started session ${String(result.json.sessionId)} — ${planned.remainingDistanceMeters} m to go`,
-        "ok",
-      );
+      addLog(`Started trip ${newTripId} — Radar trip status ${String(result.json.tripStatus)}`, "ok");
 
-      // Report the starting fix straight away rather than one interval later.
       await tick();
     } catch (error) {
       addLog(`Start failed: ${(error as Error).message}`, "error");
@@ -379,39 +314,39 @@ export function Simulator() {
     }
   }
 
-  async function stop() {
-    if (!sessionId) return;
+  async function stopTrip() {
+    if (!tripId) return;
 
     setBusy(true);
     setRunning(false);
     try {
-      // A real device would flush its queue as soon as it is back online; the
-      // simulator does it here so Stop never strands queued points.
       if (queue.length > 0) {
         onlineRef.current = true;
         setOnline(true);
         if (!(await flush(queue))) return;
       }
 
-      const result = await post(`/api/tracking/sessions/${sessionId}/stop`);
-      addLog(
-        result.ok
-          ? `Stopped session — status ${String(result.json.status)}`
-          : `Stop failed: ${String(result.json.error ?? `HTTP ${result.status}`)}`,
-        result.ok ? "ok" : "error",
-      );
+      const result = await post(`/api/tracking/sessions/${tripId}/stop`);
+      if (!result.ok) {
+        addLog(`Stop failed: ${String(result.json.error ?? `HTTP ${result.status}`)}`, "error");
+        return;
+      }
+
+      addLog(`Stopped trip — Radar trip status ${String(result.json.tripStatus)}`, "ok");
+      if (result.json.radarSyncError) {
+        addLog(`Radar sync error: ${String(result.json.radarSyncError)}`, "error");
+      }
+      await loadPlannedTrips();
     } finally {
       setBusy(false);
     }
   }
 
   async function toggleOnline() {
-    // The ref is set directly as well, so a tick already due cannot slip a live
-    // send in before the next render catches up.
     if (online) {
       onlineRef.current = false;
       setOnline(false);
-      addLog("Connection lost — new points will be queued on the device, Radar gets nothing");
+      addLog("Connection lost — route points will be queued, Radar gets nothing");
       return;
     }
 
@@ -426,16 +361,8 @@ export function Simulator() {
     }
   }
 
-  async function resendLastBatch() {
-    setBusy(true);
-    try {
-      await flush(lastBatch, "Retried");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const active = running && sessionId !== null;
+  const active = running && tripId !== null;
+  const selected = plannedTrips?.find((trip) => trip.id === selectedId) ?? null;
 
   if (!PUBLISHABLE_KEY) {
     return (
@@ -443,9 +370,9 @@ export function Simulator() {
         <CardHeader>
           <CardTitle>Radar is not configured</CardTitle>
           <CardDescription>
-            Geofencing runs on Radar. Set <code className="font-mono">NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY</code>{" "}
-            (and the other Radar variables in <code className="font-mono">.env.example</code>) and
-            restart the dev server.
+            Set <code className="font-mono">NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY</code> (and the other
+            Radar variables in <code className="font-mono">.env.example</code>) and restart the dev
+            server.
           </CardDescription>
         </CardHeader>
       </Card>
@@ -460,11 +387,7 @@ export function Simulator() {
           <CardDescription>Settings apply to the next Start.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
-          <Field
-            id="deviceId"
-            label="Device id"
-            hint="Becomes the Radar userId. Each distinct id is a tracked user in Radar's billing."
-          >
+          <Field id="deviceId" label="Device id" hint="Becomes the Radar userId. Each distinct id is a tracked user in Radar's billing.">
             <Input
               id="deviceId"
               value={deviceId}
@@ -473,11 +396,7 @@ export function Simulator() {
             />
           </Field>
 
-          <Field
-            id="interval"
-            label="Send every (seconds)"
-            hint={`A real device sends about every 120 s. Minimum ${MIN_INTERVAL_SECONDS} s — Radar allows one track per second per device.`}
-          >
+          <Field id="interval" label="Track every (seconds)" hint={`Minimum ${MIN_INTERVAL_SECONDS} s — Radar allows one track per second per device.`}>
             <Input
               id="interval"
               type="number"
@@ -489,41 +408,68 @@ export function Simulator() {
             />
           </Field>
 
-          <TripEnd
-            id="start"
-            title="Start"
-            latitude={startLatitude}
-            longitude={startLongitude}
-            radius={startRadius}
-            onLatitude={setStartLatitude}
-            onLongitude={setStartLongitude}
-            onRadius={setStartRadius}
-            disabled={active}
-          />
+          <Field
+            id="trip"
+            label="Planned trip"
+            hint="The walk starts at the source and drifts toward the destination in 80–200 m steps, parking there on arrival."
+          >
+            <div className="flex gap-2">
+              <Select
+                value={selectedId}
+                onValueChange={(value) => setSelectedId(value as string)}
+                disabled={active || !plannedTrips?.length}
+              >
+                <SelectTrigger id="trip" className="h-8 w-full min-w-0">
+                  <SelectValue>
+                    {() =>
+                      selected
+                        ? `${selected.id.slice(0, 8)} · ${endLabel(selected.start)} → ${endLabel(selected.destination)}`
+                        : plannedTrips === null
+                          ? "Loading…"
+                          : "No planned trips"
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="max-h-72">
+                  {(plannedTrips ?? []).map((trip) => (
+                    <SelectItem key={trip.id} value={trip.id}>
+                      {trip.id.slice(0, 8)} · {endLabel(trip.start)} → {endLabel(trip.destination)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="icon-sm"
+                onClick={() => void loadPlannedTrips()}
+                disabled={active}
+                aria-label="Reload planned trips"
+              >
+                <RefreshCwIcon />
+              </Button>
+            </div>
+          </Field>
 
-          <TripEnd
-            id="destination"
-            title="Destination"
-            hint="The walk drifts toward it in 80–200 m steps and parks there on arrival."
-            latitude={destinationLatitude}
-            longitude={destinationLongitude}
-            radius={destinationRadius}
-            onLatitude={setDestinationLatitude}
-            onLongitude={setDestinationLongitude}
-            onRadius={setDestinationRadius}
-            disabled={active}
-          />
+          {plannedTrips?.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No planned trips.{" "}
+              <Link href="/tracking/new" className="underline underline-offset-4">
+                Add one
+              </Link>{" "}
+              on the portal first.
+            </p>
+          )}
 
           <div className="flex flex-wrap gap-2 pt-2">
             {active ? (
-              <Button onClick={stop} disabled={busy} variant="destructive">
+              <Button onClick={stopTrip} disabled={busy} variant="destructive">
                 <SquareIcon />
                 Stop
               </Button>
             ) : (
-              <Button onClick={start} disabled={busy || !deviceId.trim()}>
+              <Button onClick={startTrip} disabled={busy || !deviceId.trim() || !selected}>
                 <PlayIcon />
-                Start new session
+                Start trip
               </Button>
             )}
 
@@ -534,7 +480,7 @@ export function Simulator() {
 
             <Button onClick={tick} disabled={!active || busy} variant="outline">
               <SendIcon />
-              Send now
+              Step now
             </Button>
           </div>
         </CardContent>
@@ -544,46 +490,38 @@ export function Simulator() {
         <CardHeader>
           <CardTitle>State</CardTitle>
           <CardDescription>
-            {sessionId ? (
+            {tripId ? (
               <Link
-                href={`/tracking/${sessionId}`}
+                href={`/tracking/${tripId}`}
                 target="_blank"
                 className="inline-flex items-center gap-1 underline underline-offset-4"
               >
-                Open session on the map
+                Open trip on the map
                 <ExternalLinkIcon className="size-3.5" />
               </Link>
             ) : (
-              "No session yet."
+              "No trip yet."
             )}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <dl className="grid grid-cols-2 gap-3 text-sm">
-            <Stat label="Session">
-              <span className="font-mono text-xs">{sessionId ? sessionId.slice(0, 8) : "—"}</span>
+            <Stat label="Trip">
+              <span className="font-mono text-xs">{tripId ? tripId.slice(0, 8) : "—"}</span>
             </Stat>
-            <Stat label="Tracking">{active ? "Running" : sessionId ? "Stopped" : "—"}</Stat>
+            <Stat label="Tracking">{active ? "Running" : tripId ? "Stopped" : "—"}</Stat>
             <Stat label="Connection">
               <span className={online ? "" : "font-medium text-amber-600"}>
                 {online ? "Online" : "Offline"}
               </span>
             </Stat>
-            <Stat label="Stored on server">{sentCount}</Stat>
-            <Stat label="Queued on device">{queue.length}</Stat>
-            <Stat label="Start geofence">
-              <Side inside={inside.START} />
+            <Stat label="Queued route points">{queue.length}</Stat>
+            <Stat label="Radar trip status">{radarTrip?.status ?? "—"}</Stat>
+            <Stat label="Radar ETA">
+              {radarTrip?.minutes !== undefined
+                ? `${formatMinutes(radarTrip.minutes)} · ${formatDistance(radarTrip.meters === undefined ? null : Math.round(radarTrip.meters))}`
+                : "—"}
             </Stat>
-            <Stat label="Destination geofence">
-              <Side inside={inside.DESTINATION} />
-            </Stat>
-            <Stat label="Remaining distance">
-              {position ? `${position.remainingDistanceMeters.toLocaleString("en-US")} m` : "—"}
-            </Stat>
-            <Stat label="ETA">
-              {position ? formatDateTimeSeconds(new Date(position.eta)) : "—"}
-            </Stat>
-            <Stat label="Radar crossings">{crossings}</Stat>
             <Stat label="Current position">
               {position ? (
                 <span className="font-mono text-xs">
@@ -594,27 +532,11 @@ export function Simulator() {
               )}
             </Stat>
           </dl>
-
           <p className="mt-4 border-t pt-4 text-xs text-muted-foreground">
-            Geofence state and crossings here come straight from Radar&apos;s track response. The
-            session page shows what arrived by webhook — if this updates and the page does not, the
-            webhook is not reaching the app.
+            Status and ETA here come straight from Radar&apos;s track response. The trip page shows
+            what arrived by webhook — if this updates and the page does not, the webhook is not
+            reaching the app.
           </p>
-
-          <div className="mt-4 border-t pt-4">
-            <p className="mb-2 text-sm text-muted-foreground">
-              Idempotency check: resend the last bulk batch. Every point should come back skipped.
-            </p>
-            <Button
-              onClick={resendLastBatch}
-              disabled={busy || lastBatch.length === 0}
-              variant="outline"
-              size="sm"
-            >
-              <RotateCcwIcon />
-              Resend last batch ({lastBatch.length})
-            </Button>
-          </div>
         </CardContent>
       </Card>
 
@@ -667,80 +589,6 @@ function Field({
       {children}
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
-  );
-}
-
-/** A trip end's point and geofence radius. */
-function TripEnd({
-  id,
-  title,
-  hint,
-  latitude,
-  longitude,
-  radius,
-  onLatitude,
-  onLongitude,
-  onRadius,
-  disabled,
-}: {
-  id: string;
-  title: string;
-  hint?: string;
-  latitude: number;
-  longitude: number;
-  radius: number;
-  onLatitude: (value: number) => void;
-  onLongitude: (value: number) => void;
-  onRadius: (value: number) => void;
-  disabled: boolean;
-}) {
-  return (
-    <div className="grid gap-3 rounded-lg border p-3">
-      <p className="text-sm font-medium">{title}</p>
-      <div className="grid grid-cols-3 gap-3">
-        <Field id={`${id}-lat`} label="Latitude">
-          <Input
-            id={`${id}-lat`}
-            type="number"
-            step="any"
-            value={latitude}
-            onChange={(event) => onLatitude(Number(event.target.value))}
-            disabled={disabled}
-          />
-        </Field>
-        <Field id={`${id}-lng`} label="Longitude">
-          <Input
-            id={`${id}-lng`}
-            type="number"
-            step="any"
-            value={longitude}
-            onChange={(event) => onLongitude(Number(event.target.value))}
-            disabled={disabled}
-          />
-        </Field>
-        <Field id={`${id}-radius`} label="Geofence (m)">
-          <Input
-            id={`${id}-radius`}
-            type="number"
-            min={50}
-            value={radius}
-            onChange={(event) => onRadius(Math.round(Number(event.target.value)) || 50)}
-            disabled={disabled}
-          />
-        </Field>
-      </div>
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  );
-}
-
-function Side({ inside }: { inside: boolean | null }) {
-  if (inside === null) return "—";
-
-  return (
-    <span className={inside ? "text-emerald-600" : "font-medium text-amber-600"}>
-      {inside ? "Inside" : "Outside"}
-    </span>
   );
 }
 

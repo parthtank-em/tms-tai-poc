@@ -6,19 +6,16 @@
 
 ## 0. What changed since this plan
 
-The POC is now a **hybrid**: Radar does the geofencing, the phone gets distance and ETA from Google, and the web map is Google Maps.
+The POC now works **exactly like the Radar POC** ([radar-tracking-poc.md](./radar-tracking-poc.md), [mobile flow](./geo-location-tracking-mobile-flow.md)), with one difference: **the planned route, distance and ETA come from the Google Routes API** (drive, traffic-aware) instead of Radar's route API. The web maps are Google Maps; address search is Google Places.
 
 | This plan says | The code does now |
 |---|---|
-| Geofencing is out of scope (§1, §17) | Each session has a **start and a destination geofence**. The server creates both in **Radar** (`tms-track-start` / `tms-track-dest`, scoped to the `deviceId`) on Start and deletes them on Stop. |
-| The phone reports nothing but locations | Still true. Crossings come from **Radar by webhook** (`POST /api/webhooks/radar`, events `user.entered_geofence` / `user.exited_geofence`). The phone does not report them. |
-| Start body is `{ "deviceId" }` (§5.1) | Also requires `start`, `destination` (each `latitude`, `longitude`, `radiusMeters` 50–10,000) and the planned `distanceMeters` and `eta` from Google. The response adds a `radar` block. |
-| A location is `id`, `latitude`, `longitude`, `capturedAt` (§5.2) | Optional `remainingDistanceMeters` and `eta` (from Google, computed on the phone) ride along with each location. The map shows the figures from the newest `capturedAt`. |
-| Two tables (§3, §4) | Three: `tracking_sessions` (plus start/destination fences, `distanceMeters`, `eta`), `tracking_locations` (plus `remainingDistanceMeters`, `eta`) and `tracking_geofence_events`. |
-| Poll with `capturedAt > after` (§8) | Polls filter on **`receivedAt >= after`**. Filtering on capture time would never return a late offline batch, because its points carry old capture times. The client re-sorts by `capturedAt`. |
-| Stop only sets `COMPLETED` and `endedAt` (§5.4) | Also deletes both Radar fences. A Radar failure is logged and does not fail the stop. |
-| — | `POST /sessions/{id}/geofence-events` exists only for app builds from before Radar. Current apps must not call it. |
-| — | Start returns `502` if Radar fails (nothing is created) and `503` if Radar is not configured. |
+| Geofencing is out of scope (§1, §17) | At Start the server creates two fences **and a Radar trip** in Radar for the phone (`tms-track-*` tags, trip `externalId` `tms-track-{sessionId}`). Radar reports crossings, trip status, live ETA and arrival by webhook; every event is stored in `tracking_events`. |
+| The phone creates and starts a session with `{ "deviceId" }` (§5.1) | Sessions are **planned** first — on the portal (`/tracking/new`) or optionally by the phone (`POST /sessions` with `start` and `destination`) — with Google's route saved. The phone lists them (`GET /sessions?status=PLANNED`) and starts one with `POST /sessions/{id}/start { deviceId }`. Status is `PLANNED` → `ACTIVE` → `COMPLETED`; a planned session can be edited or deleted on the portal. |
+| A location is `id`, `latitude`, `longitude`, `capturedAt` (§5.2) | The same plus an optional `accuracy`. The phone no longer sends its own distance or ETA; the live ETA is Radar's. |
+| Two tables (§3, §4) | `tracking_sessions`, `tracking_locations`, `tracking_events` — column for column the same as the Radar POC's `radar_trips`, `radar_trip_locations`, `radar_events` (planned ends and route, Radar trip status, ETA, departure and arrival). The earlier phone-ETA columns and `tracking_geofence_events` were removed. |
+| Poll with `capturedAt > after` (§8) | The session page polls `GET /sessions/{id}/feed?after=…`, filtered on **`receivedAt >= after`**, so a late offline batch with old capture times is still returned. |
+| Stop only sets `COMPLETED` and `endedAt` (§5.4) | Also completes the Radar trip and deletes both fences. A Radar failure is kept in `radarSyncError` and does not fail the stop. |
 
 The rest of this document is the plan as originally written.
 

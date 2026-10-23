@@ -331,7 +331,11 @@ export async function startTrip(tripId: string, input: StartTripInput): Promise<
   if (fenceError && !fenceError.ok) return fail(fenceError.message);
 
   // The destination fence must exist before the trip that points at it.
-  const radarTrip = await createTrip(config, tripId, deviceId);
+  const radarTrip = await createTrip(config, {
+    externalId: tripId,
+    userId: deviceId,
+    destination: tripGeofence(tripId, "DESTINATION"),
+  });
   if (!radarTrip.ok) return fail(radarTrip.message);
 
   const trip = await prisma.radarTrip.update({

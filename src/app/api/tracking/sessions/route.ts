@@ -1,73 +1,52 @@
-import { getSession } from "@/lib/auth/guard";
 import { badRequest, readJson } from "@/lib/tracking/http";
-import { TRACKING_DESTINATION_GEOFENCE_TAG, TRACKING_START_GEOFENCE_TAG } from "@/lib/tracking/radar";
-import { listSessions, startSession } from "@/lib/tracking/service";
-import { parseStartSession } from "@/lib/tracking/validation";
+import { listSessions, planSession } from "@/lib/tracking/service";
+import { parsePlanSession, parseStatusFilter } from "@/lib/tracking/validation";
 
 /**
- * `POST /api/tracking/sessions` — the device pressed Start.
+ * `GET /api/tracking/sessions[?status=PLANNED]` — every session, newest first.
  *
- * `start` and `destination` are required, each a point with a geofence
- * radius. The server creates both circles in Radar, scoped to `deviceId`, and
- * Radar reports the crossings by webhook — the device only runs the Radar SDK.
- * `distanceMeters` and `eta` are the phone's own route figures (Google); the
- * server stores them as reported.
+ * The phone's trip list: it shows the PLANNED ones a driver can start.
  *
- * Unauthenticated: authentication is out of scope for this POC (plan §1), and
- * the mobile app has no console session to present. Revisit before anything
- * real reports locations here.
+ * Unauthenticated, like the other device endpoints: the mobile app has no
+ * console session. Revisit before anything real reports here.
  */
-export async function POST(request: Request): Promise<Response> {
-  const parsed = parseStartSession(await readJson(request));
-  if (!parsed.ok) return badRequest(parsed.error);
+export async function GET(request: Request): Promise<Response> {
+  const status = parseStatusFilter(new URL(request.url).searchParams.get("status"));
+  if (!status.ok) return badRequest(status.error);
 
-  const result = await startSession(parsed.value);
-
-  if (result.outcome === "unconfigured") {
-    return Response.json(
-      {
-        success: false,
-        error: "Radar is not configured on the server (RADAR_SECRET_KEY, NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY).",
-      },
-      { status: 503 },
-    );
-  }
-  if (result.outcome === "radar_failed") {
-    return Response.json({ success: false, error: result.message }, { status: 502 });
-  }
-
-  const { session } = result;
-
-  return Response.json(
-    {
-      sessionId: session.id,
-      status: session.status,
-      startedAt: session.startedAt,
-      start: session.start,
-      destination: session.destination,
-      distanceMeters: session.distanceMeters,
-      eta: session.eta,
-      radar: {
-        userId: session.deviceId,
-        startGeofenceTag: TRACKING_START_GEOFENCE_TAG,
-        destinationGeofenceTag: TRACKING_DESTINATION_GEOFENCE_TAG,
-        geofenceExternalId: session.id,
-      },
-    },
-    { status: 201 },
-  );
+  return Response.json(await listSessions(status.value));
 }
 
 /**
- * `GET /api/tracking/sessions` — every session, newest first, for the web list.
+ * `POST /api/tracking/sessions` — optional for the app: the phone plans a
+ * session, as the portal's Add trip does. Two ends, each a point, a geofence
+ * radius and an optional address. Google's traffic-aware drive route is
+ * computed and stored with it.
  *
- * Unlike the device endpoints this one is behind the console login: it is
- * only ever called from a signed-in browser, which already carries the cookie.
+ * The session is PLANNED, not started — the phone starts it with
+ * `POST /sessions/{sessionId}/start`, the same as a session planned on the
+ * portal. So the fences in Radar are only ever created at Start.
+ *
+ * Unauthenticated, like the other device endpoints.
  */
-export async function GET(): Promise<Response> {
-  if (!(await getSession())) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+export async function POST(request: Request): Promise<Response> {
+  const parsed = parsePlanSession(await readJson(request));
+  if (!parsed.ok) return badRequest(parsed.error);
 
-  return Response.json(await listSessions());
+  const result = await planSession(parsed.value);
+
+  switch (result.outcome) {
+    case "unconfigured":
+      return Response.json(
+        {
+          success: false,
+          error: "Google routing is not configured (GOOGLE_MAPS_SERVER_API_KEY or NEXT_PUBLIC_GOOGLE_MAPS_API_KEY).",
+        },
+        { status: 503 },
+      );
+    case "google_failed":
+      return Response.json({ success: false, error: result.message }, { status: 502 });
+    case "planned":
+      return Response.json(result.session, { status: 201 });
+  }
 }

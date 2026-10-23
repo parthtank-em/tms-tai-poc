@@ -746,50 +746,78 @@ model DocumentCheck {
 // ---------------------------------------------------------------------------
 // Geo location tracking
 //
-// docs/geo-location-tracking-poc-implementation.md. Standalone on purpose: a
-// session belongs to a device, not to a shipment or driver — linking the two is
-// out of scope until the location pipeline itself is proven.
+// docs/geo-location-tracking-mobile-api.md. The same models as the Radar POC
+// below (trip → session), kept separate so the two POCs share no data. The only
+// difference in behaviour is the planned route: Google here, Radar there.
 // ---------------------------------------------------------------------------
 
+/// PLANNED on the web portal, ACTIVE from a phone's Start until its Stop.
 enum TrackingSessionStatus {
+  PLANNED
   ACTIVE
   COMPLETED
 }
 
-/// One record for every time the driver presses Start. Pressing Start again
-/// opens a new session rather than resuming the last one.
+/// One trip, as in the Radar POC's `RadarTrip`. The id is the `externalId` of
+/// both Radar geofences, and (prefixed `tms-track-`) of the Radar trip, so a
+/// webhook names its session directly.
+///
+/// Planned on the portal (or by the phone); nothing exists in Radar until a
+/// phone starts it, because the fences and the Radar trip are scoped to that
+/// phone's user.
 model TrackingSession {
   id        String                @id @default(uuid())
-  deviceId  String                @map("device_id")
-  startedAt DateTime              @default(now()) @map("started_at")
+  /// The phone that started the session, null while PLANNED. Also the Radar
+  /// `userId` — the SDK is told `Radar.setUserId(deviceId)`.
+  deviceId  String?               @map("device_id")
+  status    TrackingSessionStatus @default(PLANNED)
+  /// When a phone started the session, null while PLANNED.
+  startedAt DateTime?             @map("started_at")
   endedAt   DateTime?             @map("ended_at")
-  status    TrackingSessionStatus @default(ACTIVE)
-  createdAt DateTime              @default(now()) @map("created_at")
-  updatedAt DateTime              @updatedAt @map("updated_at")
 
-  /// The trip's start and destination, each with the radius of the geofence
-  /// the device registers around it. The API requires both on every new
-  /// session; the columns are nullable only for sessions created before trips
-  /// existed. Per point, all three are set together or none are (CHECK
-  /// constraints in the migration). The server never tests positions against
-  /// them — the device reports ENTER/EXIT.
-  startLatitude           Decimal? @db.Decimal(10, 7) @map("start_latitude")
-  startLongitude          Decimal? @db.Decimal(10, 7) @map("start_longitude")
-  startRadiusMeters       Int?     @map("start_radius_meters")
-  destinationLatitude     Decimal? @db.Decimal(10, 7) @map("destination_latitude")
-  destinationLongitude    Decimal? @db.Decimal(10, 7) @map("destination_longitude")
-  destinationRadiusMeters Int?     @map("destination_radius_meters")
+  /// The address picked on the portal, or null when the point was entered as
+  /// coordinates.
+  startAddress            String? @map("start_address")
+  startLatitude           Decimal @db.Decimal(10, 7) @map("start_latitude")
+  startLongitude          Decimal @db.Decimal(10, 7) @map("start_longitude")
+  startRadiusMeters       Int     @map("start_radius_meters")
+  destinationAddress      String? @map("destination_address")
+  destinationLatitude     Decimal @db.Decimal(10, 7) @map("destination_latitude")
+  destinationLongitude    Decimal @db.Decimal(10, 7) @map("destination_longitude")
+  destinationRadiusMeters Int     @map("destination_radius_meters")
 
-  /// The phone's planned distance and ETA at Start. Stored as reported; later
-  /// updates are on each `TrackingLocation`.
-  distanceMeters Int?      @map("distance_meters")
-  eta            DateTime? @map("eta")
+  /// Google's traffic-aware drive route between the two points, computed when
+  /// the session was planned. `plannedRoute` is the GeoJSON LineString's
+  /// coordinates. (The one difference from the Radar POC: its route is Radar's.)
+  plannedDistanceMeters  Int?   @map("planned_distance_meters")
+  plannedDurationMinutes Float? @map("planned_duration_minutes")
+  plannedRoute           Json?  @map("planned_route")
 
-  locations      TrackingLocation[]
-  geofenceEvents TrackingGeofenceEvent[]
+  /// Radar's own id for the trip created at Start, from the create response.
+  radarTripId       String?          @map("radar_trip_id")
+  tripStatus        RadarTripStatus? @map("trip_status")
+  /// Radar's latest ETA. `radarUpdatedAt` is the `actualCreatedAt` of the
+  /// event that set `tripStatus` and the ETA — a webhook only overwrites the
+  /// three with a newer event, so a replayed offline event cannot roll them back.
+  etaMinutes        Float?           @map("eta_minutes")
+  etaDistanceMeters Int?             @map("eta_distance_meters")
+  radarUpdatedAt    DateTime?        @map("radar_updated_at")
+  /// First exit from the start fence and first arrival, from events.
+  departedAt        DateTime?        @map("departed_at")
+  arrivedAt         DateTime?        @map("arrived_at")
+
+  /// The last Radar API call that failed, shown on the session page. Cleared on success.
+  radarSyncError String? @map("radar_sync_error")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  locations TrackingLocation[]
+  events    TrackingEvent[]
 
   @@index([deviceId, startedAt])
   @@index([status])
+  @@index([createdAt])
   @@map("tracking_sessions")
 }
 
@@ -804,55 +832,53 @@ model TrackingLocation {
   session    TrackingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   latitude   Decimal         @db.Decimal(10, 7)
   longitude  Decimal         @db.Decimal(10, 7)
+  /// Meters, from the Radar SDK location.
+  accuracy   Float?
   /// When the GPS fix was taken on the device. The route is ordered by this.
   capturedAt DateTime        @map("captured_at")
   /// When the server stored it. For an offline upload this can be much later
   /// than `capturedAt` — the live map polls on this, not on `capturedAt`, so a
   /// late batch of old points is still picked up.
   receivedAt DateTime        @default(now()) @map("received_at")
-  /// The phone's remaining distance and ETA at this fix. Optional — a phone
-  /// without a route yet still reports where it is. The session's current ETA
-  /// is the one on the newest `capturedAt`, not the newest `receivedAt`, so a
-  /// late offline batch does not overwrite a fresher live value.
-  remainingDistanceMeters Int?      @map("remaining_distance_meters")
-  eta                     DateTime? @map("eta")
 
   @@index([sessionId, capturedAt])
   @@index([sessionId, receivedAt])
   @@map("tracking_locations")
 }
 
-enum GeofenceEventType {
-  ENTER
-  EXIT
+/// Every Radar event that belongs to a session — its fences' crossings and its
+/// Radar trip's updates — as in the Radar POC's `radar_events`. The id is
+/// Radar's `_id`, so a redelivered webhook is stored once.
+model TrackingEvent {
+  id        String          @id
+  sessionId String          @map("session_id")
+  session   TrackingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  /// Radar's event type verbatim, e.g. `user.entered_geofence`.
+  type      String
+  /// Which fence, for geofence events. Null for trip events.
+  target    GeofenceTarget?
+
+  latitude   Decimal? @db.Decimal(10, 7)
+  longitude  Decimal? @db.Decimal(10, 7)
+  accuracy   Float?
+  /// Radar's confidence: 1 low, 2 medium, 3 high.
+  confidence Int?
+
+  /// When Radar processed it. For a replayed offline location this is after
+  /// `actualCreatedAt`, which is when it happened on the device.
+  createdAt       DateTime @map("created_at")
+  actualCreatedAt DateTime @map("actual_created_at")
+  receivedAt      DateTime @default(now()) @map("received_at")
+  payload         Json
+
+  @@index([sessionId, actualCreatedAt])
+  @@index([sessionId, receivedAt])
+  @@map("tracking_events")
 }
 
 enum GeofenceTarget {
   START
   DESTINATION
-}
-
-/// An enter or exit the device detected against one of the session's two
-/// geofences — `target` says which.
-///
-/// Stored as reported: the server does not check it against the fence or the
-/// route. Like locations, the id comes from the device so a retried batch is
-/// skipped rather than stored twice.
-model TrackingGeofenceEvent {
-  id         String            @id
-  sessionId  String            @map("session_id")
-  session    TrackingSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  type       GeofenceEventType
-  target     GeofenceTarget
-  /// When the device detected the crossing. Events are ordered by this.
-  capturedAt DateTime          @map("captured_at")
-  /// The device's own flag: true when the event sat in its offline queue.
-  isOffline  Boolean           @map("is_offline")
-  receivedAt DateTime          @default(now()) @map("received_at")
-
-  @@index([sessionId, capturedAt])
-  @@index([sessionId, receivedAt])
-  @@map("tracking_geofence_events")
 }
 
 // ---------------------------------------------------------------------------

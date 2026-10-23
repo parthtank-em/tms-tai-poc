@@ -1,4 +1,4 @@
-import { badRequest, readJson, sessionNotFound } from "@/lib/tracking/http";
+import { badRequest, readJson, sessionNotFound, sessionNotStarted } from "@/lib/tracking/http";
 import { recordLocations } from "@/lib/tracking/service";
 import { parseBulkLocations } from "@/lib/tracking/validation";
 
@@ -19,7 +19,8 @@ export async function POST(
   const { sessionId } = await context.params;
   const result = await recordLocations(sessionId, parsed.value);
 
-  if (!result.found) return sessionNotFound();
+  if (result.outcome === "not_found") return sessionNotFound();
+  if (result.outcome === "not_started") return sessionNotStarted();
 
   return Response.json({
     success: true,

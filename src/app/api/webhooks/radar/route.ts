@@ -13,10 +13,11 @@ import { ingestTrackingEvents } from "@/lib/tracking/service";
  * and either delivery mode. Fails closed: without `RADAR_WEBHOOK_TOKEN` nothing
  * is accepted.
  *
- * Crossings of /tracking fences (`tms-track-*`) go to the tracking session;
- * everything else is offered to the Radar POC. The tracking side claims its
- * events first, because a geofence event also carries the user's active trip
- * and would otherwise be filed under a Radar POC trip too.
+ * Events of /tracking fences (`tms-track-*`) and /tracking Radar trips
+ * (`externalId` `tms-track-…`) go to the tracking session; everything else is
+ * offered to the Radar POC. The tracking side claims its events first, because
+ * a trip event names its trip only by `externalId`, which the Radar POC's
+ * mapper would otherwise try as one of its own trip ids.
  *
  * Events that are neither POC's (places, regions, other projects' fences) are
  * acknowledged with 200 and dropped — a non-2xx would only make Radar retry

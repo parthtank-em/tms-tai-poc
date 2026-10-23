@@ -102,11 +102,14 @@ export function tripGeofence(tripId: string, target: RadarGeofenceTarget): Geofe
   return { tag: geofenceTag(target), externalId: tripId };
 }
 
-/** Starts a Radar trip whose destination is the trip's destination fence. */
+/**
+ * Starts a Radar trip for one user whose destination is a fence already
+ * created. Both POCs use it: the Radar POC with its trip id and `tms-radar-dest`
+ * fence, /tracking with a `tms-track-…` id and its `tms-track-dest` fence.
+ */
 export async function createTrip(
   config: RadarConfig,
-  tripId: string,
-  deviceId: string,
+  trip: { externalId: string; userId: string; destination: GeofenceKey },
 ): Promise<RadarResult<RadarTripResponse>> {
   const result = await request<{ trip?: RadarTripResponse }>(
     config,
@@ -114,11 +117,11 @@ export async function createTrip(
     "POST",
     "/trips",
     {
-      externalId: tripId,
-      userId: deviceId,
+      externalId: trip.externalId,
+      userId: trip.userId,
       mode: TRIP_MODE,
-      destinationGeofenceTag: DESTINATION_GEOFENCE_TAG,
-      destinationGeofenceExternalId: tripId,
+      destinationGeofenceTag: trip.destination.tag,
+      destinationGeofenceExternalId: trip.destination.externalId,
     },
   );
 
@@ -128,12 +131,13 @@ export async function createTrip(
   return { ok: true, data: result.data.trip };
 }
 
+/** `externalId` is the trip's external id: the Radar POC trip id, or /tracking's `tms-track-…`. */
 export function updateTripStatus(
   config: RadarConfig,
-  tripId: string,
+  externalId: string,
   status: "completed" | "canceled",
 ): Promise<RadarResult<unknown>> {
-  return request(config, config.publishableKey, "PATCH", `/trips/${tripId}/update`, { status });
+  return request(config, config.publishableKey, "PATCH", `/trips/${externalId}/update`, { status });
 }
 
 

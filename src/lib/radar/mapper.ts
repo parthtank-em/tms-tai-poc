@@ -159,6 +159,25 @@ export type TripUpdate = {
 const earliest = (a: Date | null, b: Date) => (a === null || b < a ? b : a);
 
 /**
+ * The newest trip state of a delivery. Its ETA is the newest one that has an
+ * ETA: an arrival carries none, and an approach just before it in the same
+ * delivery must not lose its ETA for that.
+ */
+function newestTripState(current: TripUpdate["latest"], trip: TripSnapshot, at: Date): TripUpdate["latest"] {
+  if (!current || at > current.at) {
+    const keepEta = current && trip.etaMinutes === null;
+    return keepEta
+      ? { ...trip, at, etaMinutes: current.etaMinutes, etaDistanceMeters: current.etaDistanceMeters }
+      : { ...trip, at };
+  }
+
+  // An older event only fills in an ETA the newer one lacks.
+  return current.etaMinutes === null && trip.etaMinutes !== null
+    ? { ...current, etaMinutes: trip.etaMinutes, etaDistanceMeters: trip.etaDistanceMeters }
+    : current;
+}
+
+/**
  * Folds a delivery's events into one update per trip. The caller applies each
  * with "newest wins" for `latest` and "earliest wins" for the two timestamps,
  * against what the database already holds — so the order deliveries arrive in
@@ -170,9 +189,7 @@ export function tripUpdates(events: MappedEvent[]): Map<string, TripUpdate> {
   for (const event of events) {
     const update = updates.get(event.tripId) ?? { latest: null, departedAt: null, arrivedAt: null };
 
-    if (event.trip && (!update.latest || event.actualCreatedAt > update.latest.at)) {
-      update.latest = { ...event.trip, at: event.actualCreatedAt };
-    }
+    if (event.trip) update.latest = newestTripState(update.latest, event.trip, event.actualCreatedAt);
 
     if (event.type === "user.exited_geofence" && event.target === "START") {
       update.departedAt = earliest(update.departedAt, event.actualCreatedAt);

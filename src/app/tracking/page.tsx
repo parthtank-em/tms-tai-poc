@@ -1,4 +1,4 @@
-import { EyeIcon /* , SmartphoneIcon */ } from "lucide-react";
+import { EyeIcon, PlusIcon, SmartphoneIcon } from "lucide-react";
 import Link from "next/link";
 
 import { TrackingStatusBadge } from "@/components/tracking/tracking-status-badge";
@@ -12,7 +12,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDateTime, formatNumber } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
+import { getRadarConfig, getRadarWebhookToken } from "@/lib/radar/config";
+import { arrivalTime, formatMinutes } from "@/lib/tracking/display";
+import { getGoogleRoutesKey } from "@/lib/tracking/google-routes";
 import { listSessions } from "@/lib/tracking/service";
 
 // A device can start a session at any moment, so the list is always read fresh.
@@ -20,11 +23,16 @@ export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Location tracking · FreightID",
-  description: "Tracking sessions reported by the mobile app.",
+  description: "Trips planned here with Google routing and tracked with the Radar SDK: geofence events, trip status and ETA.",
 };
 
 export default async function TrackingSessionsPage() {
   const sessions = await listSessions();
+  const missing = [
+    !getGoogleRoutesKey() && "GOOGLE_MAPS_SERVER_API_KEY / NEXT_PUBLIC_GOOGLE_MAPS_API_KEY",
+    !getRadarConfig() && "RADAR_SECRET_KEY / NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY",
+    !getRadarWebhookToken() && "RADAR_WEBHOOK_TOKEN",
+  ].filter(Boolean);
 
   return (
     <main className="mx-auto w-full max-w-7xl px-6 py-10">
@@ -32,31 +40,43 @@ export default async function TrackingSessionsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Tracking sessions</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            One row per press of Start on a device. Open a session to see its route.
+            Plan a trip here (route from Google); a driver starts it from the mobile app. Radar then
+            decides when the device enters or exits a fence and computes the ETA (car mode).
           </p>
         </div>
 
-        {/* Hidden for now — the simulator is still reachable at /tracking/simulator.
-        <Button render={<Link href="/tracking/simulator" />} variant="outline">
-          <SmartphoneIcon />
-          Mobile simulator
-        </Button>
-        */}
+        <div className="flex gap-2">
+          <Button render={<Link href="/tracking/simulator" />} variant="outline">
+            <SmartphoneIcon />
+            Simulator
+          </Button>
+          <Button render={<Link href="/tracking/new" />}>
+            <PlusIcon />
+            Add trip
+          </Button>
+        </div>
       </header>
+
+      {missing.length > 0 && (
+        <p className="mb-6 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          Not configured: <code className="font-mono">{missing.join(", ")}</code>. See{" "}
+          <code className="font-mono">.env.example</code>.
+        </p>
+      )}
 
       {sessions.length === 0 ? (
         <Card>
           <CardHeader>
             <CardTitle>No sessions yet</CardTitle>
             <CardDescription>
-              Start one from the mobile app.
-              {/* Hidden along with the header button.
-              Start one from the mobile app, or from the{" "}
+              <Link href="/tracking/new" className="underline underline-offset-4">
+                Add a trip
+              </Link>
+              , then start it from the mobile app or the{" "}
               <Link href="/tracking/simulator" className="underline underline-offset-4">
                 simulator
               </Link>
               .
-              */}
             </CardDescription>
           </CardHeader>
         </Card>
@@ -66,10 +86,9 @@ export default async function TrackingSessionsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Session</TableHead>
-                <TableHead>Device</TableHead>
                 <TableHead>Started</TableHead>
-                <TableHead>Ended</TableHead>
-                <TableHead className="text-right">Points</TableHead>
+                <TableHead>ETA</TableHead>
+                <TableHead>Arrived</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-0" />
               </TableRow>
@@ -80,13 +99,27 @@ export default async function TrackingSessionsPage() {
                   <TableCell className="font-mono text-xs" title={session.id}>
                     {session.id.slice(0, 8)}
                   </TableCell>
-                  <TableCell>{session.deviceId}</TableCell>
-                  <TableCell>{formatDateTime(new Date(session.startedAt))}</TableCell>
                   <TableCell>
-                    {formatDateTime(session.endedAt ? new Date(session.endedAt) : null)}
+                    {session.startedAt ? (
+                      formatDateTime(new Date(session.startedAt))
+                    ) : (
+                      <span className="text-muted-foreground">Not started</span>
+                    )}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatNumber(session.locationCount)}
+                  <TableCell>
+                    {session.eta ? (
+                      <>
+                        {formatMinutes(session.eta.minutes)}
+                        <span className="block text-xs text-muted-foreground">
+                          {formatDateTime(arrivalTime(session))}
+                        </span>
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {formatDateTime(session.arrivedAt ? new Date(session.arrivedAt) : null)}
                   </TableCell>
                   <TableCell>
                     <TrackingStatusBadge status={session.status} />

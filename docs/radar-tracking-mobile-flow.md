@@ -33,6 +33,60 @@ GET /api/radar-tracking/trips/{tripId}
 - Returns the same trip object with full details.
 - `404` → trip no longer exists (e.g. deleted on the portal); go back to the list.
 
+`200` response (a trip not started yet):
+
+```json
+{
+  "id": "cmh3k2x9p0001ab12cd34ef56",
+  "deviceId": null,
+  "status": "PLANNED",
+  "tripStatus": null,
+  "createdAt": "2026-10-23T08:30:00.000Z",
+  "startedAt": null,
+  "endedAt": null,
+  "start": {
+    "address": "Ring Road, Surat, Gujarat",
+    "latitude": 21.2049,
+    "longitude": 72.8411,
+    "radiusMeters": 300
+  },
+  "destination": {
+    "address": "Alkapuri, Vadodara, Gujarat",
+    "latitude": 22.3072,
+    "longitude": 73.1812,
+    "radiusMeters": 500
+  },
+  "planned": { "distanceMeters": 152340, "durationMinutes": 168 },
+  "eta": null,
+  "radarUpdatedAt": null,
+  "departedAt": null,
+  "arrivedAt": null,
+  "radarSyncError": null,
+  "locationCount": 0,
+  "eventCount": 0
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `status` | `PLANNED` → `ACTIVE` (after Start) → `COMPLETED` (after Stop). |
+| `deviceId` | Phone that started the trip; `null` while `PLANNED`. |
+| `tripStatus` | Radar's status (`PENDING`, `STARTED`, `APPROACHING`, `ARRIVED`, `COMPLETED`, `CANCELED`, `EXPIRED`); `null` until Radar has acknowledged the trip. |
+| `start` / `destination` | Geofence centre and radius. `address` is `null` if the point was entered as coordinates. |
+| `planned` | Planned route distance and time; can be `null` for older trips. |
+| `eta` | `{ "minutes": 42, "distanceMeters": 38000 }` from Radar once the trip is active; `null` before that. |
+| `departedAt` / `arrivedAt` | When the phone left the start / reached the destination geofence. |
+| `radarSyncError` | Last error talking to Radar, otherwise `null`. |
+| `locationCount` / `eventCount` | Points received and Radar events received for this trip. |
+
+All times are ISO 8601 UTC strings.
+
+`404` response:
+
+```json
+{ "success": false, "error": "Radar trip not found." }
+```
+
 ## Step 2b — (Optional) Create a trip on the phone
 
 Only if drivers should plan trips themselves. Otherwise trips come from the web portal.

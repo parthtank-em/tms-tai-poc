@@ -18,3 +18,11 @@ export function badRequest(error: string): Response {
 export function sessionNotFound(): Response {
   return Response.json({ success: false, error: "Tracking session not found." }, { status: 404 });
 }
+
+/** 409 for points sent to a session no phone has started. */
+export function sessionNotStarted(): Response {
+  return Response.json(
+    { success: false, error: "Tracking session has not been started — call POST /start first." },
+    { status: 409 },
+  );
+}

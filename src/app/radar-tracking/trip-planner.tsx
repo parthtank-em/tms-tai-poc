@@ -4,20 +4,9 @@ import { useMapsLibrary } from "@vis.gl/react-google-maps";
 import { EyeIcon, LoaderCircleIcon, MapPinIcon, SaveIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  useTransition,
-} from "react";
+import { useEffect, useId, useMemo, useRef, useState, useTransition } from "react";
 
-import {
-  createTripAction,
-  previewRouteAction,
-  updateTripAction,
-} from "./actions";
+import { createTripAction, previewRouteAction, updateTripAction } from "./actions";
 
 import {
   GoogleMapsProvider,
@@ -27,13 +16,7 @@ import {
   type MapMarker,
 } from "@/components/radar-tracking/trip-map-view";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -185,9 +168,7 @@ export type PlannerTrip = {
 /** Without `trip`, plans a new trip; with it, edits that planned trip. */
 export function TripPlanner({ trip }: { trip?: PlannerTrip }) {
   const router = useRouter();
-  const [source, setSource] = useState<EndDraft>(() =>
-    trip ? draftOf(trip.start) : emptyEnd(),
-  );
+  const [source, setSource] = useState<EndDraft>(() => (trip ? draftOf(trip.start) : emptyEnd()));
   const [destination, setDestination] = useState<EndDraft>(() =>
     trip ? draftOf(trip.destination) : emptyEnd(),
   );
@@ -210,8 +191,7 @@ export function TripPlanner({ trip }: { trip?: PlannerTrip }) {
   const current = toInput(source, destination);
   const stale =
     preview !== null &&
-    (!current.ok ||
-      JSON.stringify(current.input) !== JSON.stringify(preview.input));
+    (!current.ok || JSON.stringify(current.input) !== JSON.stringify(preview.input));
 
   function runPreview() {
     if (!current.ok) {
@@ -287,9 +267,7 @@ export function TripPlanner({ trip }: { trip?: PlannerTrip }) {
           text: "Destination",
         },
       ] satisfies MapMarker[],
-      lines: [
-        { key: "route", path: preview.route.path, color: ROUTE_COLOR },
-      ] satisfies MapLine[],
+      lines: [{ key: "route", path: preview.route.path, color: ROUTE_COLOR }] satisfies MapLine[],
     };
   }, [shown, preview]);
 
@@ -322,28 +300,16 @@ export function TripPlanner({ trip }: { trip?: PlannerTrip }) {
 
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={runPreview} disabled={busy}>
-              {previewing ? (
-                <LoaderCircleIcon className="animate-spin" />
-              ) : (
-                <EyeIcon />
-              )}
+              {previewing ? <LoaderCircleIcon className="animate-spin" /> : <EyeIcon />}
               Preview
             </Button>
             <Button onClick={save} disabled={busy}>
-              {saving ? (
-                <LoaderCircleIcon className="animate-spin" />
-              ) : (
-                <SaveIcon />
-              )}
+              {saving ? <LoaderCircleIcon className="animate-spin" /> : <SaveIcon />}
               {trip ? "Save changes" : "Submit"}
             </Button>
             <Button
               variant="ghost"
-              render={
-                <Link
-                  href={trip ? `/radar-tracking/${trip.id}` : "/radar-tracking"}
-                />
-              }
+              render={<Link href={trip ? `/radar-tracking/${trip.id}` : "/radar-tracking"} />}
             >
               Cancel
             </Button>
@@ -353,25 +319,14 @@ export function TripPlanner({ trip }: { trip?: PlannerTrip }) {
         </div>
 
         <div className="h-[28rem] overflow-hidden rounded-xl border bg-muted lg:sticky lg:top-6 lg:h-[calc(100svh-8rem)] lg:min-h-[32rem]">
-          <TripMapView
-            fences={fences}
-            markers={markers}
-            lines={lines}
-            fitKey={previewCount}
-          />
+          <TripMapView fences={fences} markers={markers} lines={lines} fitKey={previewCount} />
         </div>
       </div>
     </GoogleMapsProvider>
   );
 }
 
-function RouteCard({
-  preview,
-  stale,
-}: {
-  preview: Preview | null;
-  stale: boolean;
-}) {
+function RouteCard({ preview, stale }: { preview: Preview | null; stale: boolean }) {
   return (
     <Card size="sm">
       <CardHeader>
@@ -402,9 +357,7 @@ function RouteCard({
             {preview.at !== null && (
               <>
                 Leaving when previewed, it would arrive about{" "}
-                {formatDateTime(
-                  new Date(preview.at + preview.route.durationMinutes * 60_000),
-                )}
+                {formatDateTime(new Date(preview.at + preview.route.durationMinutes * 60_000))}
                 .{" "}
               </>
             )}
@@ -412,8 +365,7 @@ function RouteCard({
           </p>
           {stale && (
             <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
-              The points or radii changed since this preview — preview again to
-              update it.
+              The points or radii changed since this preview — preview again to update it.
             </p>
           )}
         </CardContent>
@@ -478,9 +430,7 @@ function EndCard({
                 inputMode="decimal"
                 placeholder="21.1702"
                 value={value.latitude}
-                onChange={(event) =>
-                  onChange({ ...value, latitude: event.target.value })
-                }
+                onChange={(event) => onChange({ ...value, latitude: event.target.value })}
                 disabled={disabled}
               />
             </div>
@@ -491,9 +441,7 @@ function EndCard({
                 inputMode="decimal"
                 placeholder="72.8311"
                 value={value.longitude}
-                onChange={(event) =>
-                  onChange({ ...value, longitude: event.target.value })
-                }
+                onChange={(event) => onChange({ ...value, longitude: event.target.value })}
                 disabled={disabled}
               />
             </div>
@@ -513,16 +461,12 @@ function EndCard({
             max={MAX_GEOFENCE_RADIUS_METERS}
             step={10}
             value={value.radius}
-            onChange={(event) =>
-              onChange({ ...value, radius: event.target.value })
-            }
+            onChange={(event) => onChange({ ...value, radius: event.target.value })}
             disabled={disabled}
           />
           <p className="text-xs text-muted-foreground">
-            {MIN_GEOFENCE_RADIUS_METERS}–
-            {MAX_GEOFENCE_RADIUS_METERS.toLocaleString("en-US")} m. Radar
-            reports the phone entering and exiting this circle around the {name}
-            .
+            {MIN_GEOFENCE_RADIUS_METERS}–{MAX_GEOFENCE_RADIUS_METERS.toLocaleString("en-US")} m.
+            Radar reports the phone entering and exiting this circle around the {name}.
           </p>
         </div>
       </CardContent>
@@ -562,8 +506,7 @@ function AddressSearch({
 }) {
   // Google's Places library; null until the Google Maps script has loaded it.
   const places = useMapsLibrary("places");
-  const sessionToken =
-    useRef<google.maps.places.AutocompleteSessionToken | null>(null);
+  const sessionToken = useRef<google.maps.places.AutocompleteSessionToken | null>(null);
 
   // The results remember their query, so "no matches" is only said of a search that ran.
   const [results, setResults] = useState<{
@@ -590,11 +533,10 @@ function AddressSearch({
     const timer = setTimeout(async () => {
       try {
         sessionToken.current ??= new places.AutocompleteSessionToken();
-        const response =
-          await places.AutocompleteSuggestion.fetchAutocompleteSuggestions({
-            input: query,
-            sessionToken: sessionToken.current,
-          });
+        const response = await places.AutocompleteSuggestion.fetchAutocompleteSuggestions({
+          input: query,
+          sessionToken: sessionToken.current,
+        });
         if (cancelled) return;
 
         const suggestions: Suggestion[] = [];
@@ -614,9 +556,7 @@ function AddressSearch({
       } catch (cause) {
         if (cancelled) return;
         setResults({ query, suggestions: [] });
-        setSearchError(
-          cause instanceof Error ? cause.message : "Search failed.",
-        );
+        setSearchError(cause instanceof Error ? cause.message : "Search failed.");
       }
     }, SEARCH_DEBOUNCE_MS);
 
@@ -638,8 +578,7 @@ function AddressSearch({
       // This call ends the billing session; the next search starts a new one.
       sessionToken.current = null;
 
-      if (!place.location)
-        throw new Error("Google returned no location for this place.");
+      if (!place.location) throw new Error("Google returned no location for this place.");
 
       const address = place.formattedAddress ?? suggestion.prediction.text.text;
       onChange({
@@ -650,9 +589,7 @@ function AddressSearch({
         longitude: String(place.location.lng()),
       });
     } catch (cause) {
-      setSearchError(
-        cause instanceof Error ? cause.message : "Could not load this place.",
-      );
+      setSearchError(cause instanceof Error ? cause.message : "Could not load this place.");
     } finally {
       setPicking(false);
     }
@@ -694,10 +631,7 @@ function AddressSearch({
               setHighlighted((index) => (index + 1) % suggestions.length);
             } else if (event.key === "ArrowUp") {
               event.preventDefault();
-              setHighlighted(
-                (index) =>
-                  (index - 1 + suggestions.length) % suggestions.length,
-              );
+              setHighlighted((index) => (index - 1 + suggestions.length) % suggestions.length);
             } else if (event.key === "Enter") {
               event.preventDefault();
               void pick(suggestions[highlighted]);
@@ -741,9 +675,7 @@ function AddressSearch({
                 >
                   <MapPinIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                   <span className="min-w-0">
-                    <span className="block truncate font-medium">
-                      {suggestion.title}
-                    </span>
+                    <span className="block truncate font-medium">{suggestion.title}</span>
                     {suggestion.detail && (
                       <span className="block truncate text-xs text-muted-foreground">
                         {suggestion.detail}
@@ -760,8 +692,7 @@ function AddressSearch({
       <p className="text-xs text-muted-foreground">
         {picked ? (
           <span className="font-mono">
-            {Number(value.latitude).toFixed(6)},{" "}
-            {Number(value.longitude).toFixed(6)}
+            {Number(value.latitude).toFixed(6)}, {Number(value.longitude).toFixed(6)}
           </span>
         ) : searchError && !showList ? (
           <span className="text-destructive">{searchError}</span>

@@ -10,14 +10,29 @@ Design background: [radar-tracking-poc.md](./radar-tracking-poc.md).
 
 | Concern | Who |
 |---|---|
+| Planning a trip: source, destination, geofence radius for each | **The web portal** (`/radar-tracking` → Add trip). Optionally **the app** too, with `POST /trips` |
+| Listing trips and starting one | **The app**, from our API |
 | Tracking location in the background, battery, offline replay | **Radar SDK** on the phone |
-| Deciding when the device enters/leaves the start and destination | **Radar** (server side, from the SDK's locations) |
+| Creating the trip's two geofences and the Radar trip | **Our backend**, on `POST /trips/{id}/start` |
+| Deciding when the device enters/exits the start and destination | **Radar** (server side, from the SDK's locations) |
 | Trip status (started → approaching → arrived) and ETA | **Radar** (car mode) |
-| Creating the trip and its two geofences in Radar | **Our backend**, on `POST /trips` |
 | The route line on our web map | **The app** forwards each SDK location to our backend |
 | Completing the trip and removing the fences | **Our backend**, on `POST /trips/{id}/stop` |
 
-The app does **not** report geofence crossings and does **not** compute distance or ETA.
+The app does **not** report geofence crossings, and does **not** compute distance or ETA.
+
+### Trip lifecycle
+
+```text
+PLANNED  ── phone: POST /start ──►  ACTIVE  ── phone: POST /stop ──►  COMPLETED
+(created on the portal or by        (this phone's trip;               (history)
+ POST /trips; can be edited or       fences exist in Radar)
+ deleted on the portal)
+```
+
+A trip is always created **PLANNED**, wherever it comes from, and always started with `POST /start`. Radar's geofences only exist from Start to Stop.
+
+A trip can be started **once**, by **any** phone. The first phone to start it owns it; anyone else gets `409`.
 
 ---
 
@@ -50,12 +65,12 @@ Use the Radar **test** publishable key (`prj_test_pk_…`) from the team.
 
 ```text
 Radar.initialize(publishableKey)
-Radar.setUserId(deviceId)          // the same deviceId you send to our API
+Radar.setUserId(deviceId)          // the same deviceId you send to POST /start
 request "Always" location permission (background location on Android)
-Radar.trackOnce()                  // creates the Radar user before any trip names it
+Radar.trackOnce()                  // creates the Radar user before a trip names it
 ```
 
-`deviceId` must be stable for the install. It becomes the Radar `userId`; the trip and both geofences are scoped to it, so events only fire for this device.
+`deviceId` must be stable for the install. It becomes the Radar `userId`; the trip and both geofences are scoped to it when the phone starts the trip, so events only fire for this device.
 
 Native SDK docs: iOS `RadarSDK`, Android `io.radar:sdk`, React Native `react-native-radar`, Flutter `flutter_radar`. Use SDK 3.16 or newer so tracking options (including offline replay) can be controlled from the Radar dashboard.
 
@@ -65,41 +80,147 @@ Native SDK docs: iOS `RadarSDK`, Android `io.radar:sdk`, React Native `react-nat
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| POST | `/api/radar-tracking/trips` | Start a trip |
+| GET | `/api/radar-tracking/trips?status=PLANNED` | List trips the driver can start |
+| GET | `/api/radar-tracking/trips/{tripId}` | Trip detail |
+| POST | `/api/radar-tracking/trips` | Create a trip (planned) — **optional** |
+| POST | `/api/radar-tracking/trips/{tripId}/start` | Start a trip |
 | POST | `/api/radar-tracking/trips/{tripId}/locations` | Forward one SDK location |
 | POST | `/api/radar-tracking/trips/{tripId}/locations/bulk` | Upload queued locations |
 | POST | `/api/radar-tracking/trips/{tripId}/stop` | Stop the trip |
 
-### 4.1 Start a trip
+> **Changed from the earlier POC:** `POST /trips` used to create **and start** the trip, taking a `deviceId`. It now only creates a planned trip (any `deviceId` sent is ignored) and returns the trip object, not the `radar` block. Call `POST /trips/{tripId}/start` next.
+
+### The trip object
+
+`GET /trips` returns an array of these; `GET /trips/{tripId}` returns one.
+
+```json
+{
+  "id": "f61e6baf-e426-46ca-8fff-7243ae3d5cdd",
+  "status": "PLANNED",
+  "deviceId": null,
+  "createdAt": "2026-10-23T08:40:12.118Z",
+  "startedAt": null,
+  "endedAt": null,
+  "start": {
+    "address": "Surat Railway Station, Railway Station Area, Varachha, Surat, Gujarat 395003, India",
+    "latitude": 21.2049,
+    "longitude": 72.8411,
+    "radiusMeters": 300
+  },
+  "destination": {
+    "address": null,
+    "latitude": 22.3072,
+    "longitude": 73.1812,
+    "radiusMeters": 500
+  },
+  "planned": { "distanceMeters": 142711, "durationMinutes": 103.2 },
+  "tripStatus": null,
+  "eta": null,
+  "radarUpdatedAt": null,
+  "departedAt": null,
+  "arrivedAt": null,
+  "radarSyncError": null,
+  "locationCount": 0,
+  "eventCount": 0
+}
+```
+
+| Field | Notes |
+|---|---|
+| `status` | Our lifecycle: `PLANNED`, `ACTIVE` or `COMPLETED`. Only `PLANNED` trips can be started. |
+| `deviceId`, `startedAt` | `null` until a phone starts the trip. |
+| `start.address`, `destination.address` | The address picked when the trip was planned (on the portal from Google Places, or sent by the app on `POST /trips`). `null` when the point was entered as latitude/longitude — show the coordinates instead. |
+| `planned` | Radar's **truck** route from when the trip was planned: distance in meters, travel time in minutes. For display only; the live ETA after Start is `eta`, which is Radar's **car** ETA (Radar trips have no truck mode). |
+| `tripStatus`, `eta`, `departedAt`, `arrivedAt` | Filled in by Radar after Start (by webhook). `eta.minutes` is the remaining travel time. |
+
+### 4.1 List trips
+
+```http
+GET /api/radar-tracking/trips?status=PLANNED
+```
+
+Newest first. `status` is optional (`PLANNED`, `ACTIVE`, `COMPLETED`, any case); without it every trip is returned. For the driver's "trips to start" screen use `status=PLANNED`.
+
+| Status | When |
+|---|---|
+| 200 | An array, possibly empty. |
+| 400 | `status` is not one of the three values. |
+
+### 4.2 Trip detail
+
+```http
+GET /api/radar-tracking/trips/{tripId}
+```
+
+| Status | When |
+|---|---|
+| 200 | The trip object. |
+| 404 | No such trip (for example, deleted on the portal). |
+
+### 4.3 Create a trip (optional)
 
 ```http
 POST /api/radar-tracking/trips
 ```
 
+> **Optional for the app.** Trips are normally planned on the web portal, and the app only lists and starts them. Implement this only if drivers should also be able to plan a trip on the phone; the rest of the flow works without it.
+
+For a driver who plans the trip on the phone rather than picking one from the portal. The server computes Radar's truck route and saves the trip as `PLANNED`; nothing is created in Radar until Start.
+
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `deviceId` | string | yes | 1–200 chars. Must match `Radar.setUserId`. |
-| `start` | object | yes | `latitude` (−90 to 90), `longitude` (−180 to 180), `radiusMeters` (whole number, 50–10,000). |
-| `destination` | object | yes | Same fields as `start`. |
+| `start` | object | yes | Where the trip starts, and the geofence around it. |
+| `start.latitude` | number | yes | −90 to 90 |
+| `start.longitude` | number | yes | −180 to 180 |
+| `start.radiusMeters` | integer | yes | 50–10,000. Below ~50 m GPS drift causes false exits; 10 km is Radar's limit. |
+| `start.address` | string or `null` | no | Up to 500 chars, shown in the trip list. Leave it out or `null` for a point picked on a map or typed as coordinates. |
+| `destination` | object | yes | Same four fields and rules as `start`. |
 
 ```json
 {
-  "deviceId": "device-123",
-  "start":       { "latitude": 21.1702, "longitude": 72.8311, "radiusMeters": 300 },
+  "start":       { "address": "Surat Railway Station, Railway Station Area, Varachha, Surat, Gujarat 395003, India", "latitude": 21.2049, "longitude": 72.8411, "radiusMeters": 300 },
   "destination": { "latitude": 22.3072, "longitude": 73.1812, "radiusMeters": 500 }
 }
 ```
 
-**Response — `201 Created`**
+**Response — `201 Created`:** the [trip object](#the-trip-object), with `status: "PLANNED"` and `planned` filled in. Keep its `id`, then call [Start](#44-start-a-trip).
+
+| Status | When |
+|---|---|
+| 400 | Invalid body; the `error` names the field, e.g. `destination.radiusMeters must be a whole number between 50 and 10000.` |
+| 502 | Radar could not route between the two points (or the call failed). Nothing was saved. Check the points; retrying is safe. |
+| 503 | Radar keys are not configured on the server. |
+
+Not idempotent: each successful call creates a new trip. If the response is lost, look for the trip in `GET /trips?status=PLANNED` before sending again.
+
+Our API has no address search. The portal uses Google Places Autocomplete; for matching addresses, use the Google Places SDK on the phone too (or the Radar SDK's `Radar.autocomplete`), and send the picked address and coordinates.
+
+### 4.4 Start a trip
+
+```http
+POST /api/radar-tracking/trips/{tripId}/start
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `deviceId` | string | yes | 1–200 chars. Must match `Radar.setUserId`. |
+
+```json
+{ "deviceId": "device-123" }
+```
+
+**Response — `200 OK`**
 
 ```json
 {
   "tripId": "f61e6baf-e426-46ca-8fff-7243ae3d5cdd",
   "status": "ACTIVE",
   "tripStatus": "STARTED",
-  "startedAt": "2026-10-21T09:12:41.272Z",
-  "start":       { "latitude": 21.1702, "longitude": 72.8311, "radiusMeters": 300 },
-  "destination": { "latitude": 22.3072, "longitude": 73.1812, "radiusMeters": 500 },
+  "startedAt": "2026-10-23T09:12:41.272Z",
+  "start":       { "address": "Surat Railway Station, Railway Station Area, Varachha, Surat, Gujarat 395003, India", "latitude": 21.2049, "longitude": 72.8411, "radiusMeters": 300 },
+  "destination": { "address": null, "latitude": 22.3072, "longitude": 73.1812, "radiusMeters": 500 },
+  "planned": { "distanceMeters": 142711, "durationMinutes": 103.2 },
   "radar": {
     "userId": "device-123",
     "externalId": "f61e6baf-e426-46ca-8fff-7243ae3d5cdd",
@@ -121,11 +242,13 @@ Optionally, to get the SDK's trip-aware behaviour, call `Radar.startTrip` with t
 
 | Status | When |
 |---|---|
-| 400 | Invalid body; the `error` names the field. |
-| 502 | A Radar call failed. Nothing was created. Safe to retry. |
+| 400 | `deviceId` missing or invalid. |
+| 404 | No such trip. Refresh the list. |
+| 409 | The trip was already started (by this or another phone) or is completed. The body has `success: false`, `status`, `deviceId` and `startedAt`. If `deviceId` is yours, a previous Start succeeded and its response was lost: carry on tracking. Otherwise refresh the list. |
+| 502 | A Radar call failed. The trip is back to `PLANNED` and nothing was left in Radar. Safe to retry. |
 | 503 | Radar keys are not configured on the server. |
 
-### 4.2 Forward one location
+### 4.5 Forward one location
 
 ```http
 POST /api/radar-tracking/trips/{tripId}/locations
@@ -147,10 +270,11 @@ Call from the SDK's location listener (iOS `didUpdateLocation`, Android `RadarRe
 |---|---|
 | 400 | Invalid body; the `error` names the field. Retrying the same point won't help. |
 | 404 | No such trip. Drop the queued points for it. |
+| 409 | The trip has not been started. Call `POST /start` first. |
 
 A **stopped trip still accepts locations**, so points queued while offline can be uploaded after Stop.
 
-### 4.3 Upload queued locations
+### 4.6 Upload queued locations
 
 ```http
 POST /api/radar-tracking/trips/{tripId}/locations/bulk
@@ -162,12 +286,13 @@ POST /api/radar-tracking/trips/{tripId}/locations/bulk
 |---|---|
 | 400 | Empty array, more than 1,000 items, or any invalid item. Validation is all-or-nothing: one bad point rejects the whole batch and nothing is stored. The `error` names the index, e.g. `locations[3].capturedAt …`. |
 | 404 | No such trip. Drop the queued points for it. |
+| 409 | The trip has not been started. |
 
 As with a single location, a stopped trip still accepts the batch.
 
 This queue is **only for our route line**. Radar receives the offline stretch through the SDK's own replay, independently.
 
-### 4.4 Stop the trip
+### 4.7 Stop the trip
 
 ```http
 POST /api/radar-tracking/trips/{tripId}/stop
@@ -181,7 +306,7 @@ No body. Completes the Radar trip and deletes both geofences.
   "tripId": "f61e6baf-e426-46ca-8fff-7243ae3d5cdd",
   "status": "COMPLETED",
   "tripStatus": "COMPLETED",
-  "endedAt": "2026-10-21T10:30:00.000Z",
+  "endedAt": "2026-10-23T10:30:00.000Z",
   "radarSyncError": null
 }
 ```
@@ -190,7 +315,7 @@ A Radar failure does not fail the stop; it is reported in `radarSyncError`.
 
 | Status | When |
 |---|---|
-| 409 | The trip was already stopped. The body has `success: false` plus the same fields as above; treat it as success. |
+| 409 | The trip is not active: already stopped (treat as success — the body has `success: false` plus the same fields as above), or never started. |
 | 404 | No such trip. |
 
 ---
@@ -201,10 +326,22 @@ A Radar failure does not fail the stop; it is reported in `radarSyncError`.
 on app launch:
     Radar.initialize(pk); Radar.setUserId(deviceId); Radar.trackOnce()
 
+trip list screen:
+    trips = GET /trips?status=PLANNED            // show start/destination address, planned distance and time
+
+new trip screen (OPTIONAL — only if drivers plan trips on the phone; otherwise trips come from the portal):
+    pick each end with Google Places autocomplete, a map tap or typed coordinates; set both radii
+    trip = POST /trips { start, destination }   // 201 → PLANNED trip; show it, then Start as below
+
+trip detail screen:
+    trip = GET /trips/{tripId}
+
 on Start tap:
-    { tripId, radar } = POST /trips { deviceId, start, destination }
-    save tripId to persistent storage
-    Radar.startTracking(trip preset)                 // replay is set from the dashboard
+    POST /trips/{tripId}/start { deviceId }
+        200 → save tripId to persistent storage; Radar.startTracking(trip preset)
+        409 with your deviceId → same as 200 (an earlier Start succeeded)
+        409 otherwise / 404 → "trip no longer available", refresh the list
+        502 → nothing changed, let the driver retry
 
 on each Radar SDK location (listener):
     point = { id: newUUID(), latitude, longitude, accuracy, capturedAt: location.timestamp }
@@ -212,6 +349,7 @@ on each Radar SDK location (listener):
     if online: POST /locations (1 point) or /locations/bulk (up to 1,000)
                on 200 remove those ids; on 5xx/network keep and retry with backoff
                on 400 move the batch aside; on 404 clear the queue for this trip
+               on 409 the trip was never started — call POST /start before sending points
 
 on Stop tap (or when you decide the trip is over):
     Radar.stopTracking()
@@ -224,7 +362,7 @@ Radar's own events (`entered_geofence`, `approaching_trip_destination`, `arrived
 
 ## 6. POC limitations
 
-- No authentication or rate limiting on these endpoints.
-- ETA is Radar's **car** ETA; Radar trips do not support a truck mode.
-- The trip is not linked to a shipment or driver — only to `deviceId`.
-- One start and one destination per trip, fixed at Start.
+- No authentication or rate limiting on these endpoints. Any phone can list and start any planned trip.
+- The live ETA is Radar's **car** ETA; Radar trips do not support a truck mode. Only the planned route (`planned`) is a truck route.
+- The trip is not linked to a shipment or driver — only to the `deviceId` that started it.
+- One start and one destination per trip, fixed once the trip is started.

@@ -15,8 +15,15 @@ const DEFAULT_API_BASE_URL = "https://api.radar.io/v1";
 export const START_GEOFENCE_TAG = "tms-radar-start";
 export const DESTINATION_GEOFENCE_TAG = "tms-radar-dest";
 
-/** Radar trips support foot, bike and car; trucks are routed as cars. */
+/** Radar trips support foot, bike and car; trucks are tracked as cars. */
 export const TRIP_MODE = "car";
+
+/**
+ * The planned route (portal preview and saved trip) uses Radar's routing API,
+ * which does offer a truck mode. So the planned distance and ETA are a truck's,
+ * while the live ETA after Start is Radar's car ETA.
+ */
+export const ROUTE_MODE = "truck";
 
 export type RadarConfig = {
   apiBaseUrl: string;

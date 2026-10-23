@@ -19,6 +19,25 @@ export function tripNotFound(): Response {
   return Response.json({ success: false, error: "Radar trip not found." }, { status: 404 });
 }
 
+/** 503 when the Radar keys are missing. */
+export function radarUnconfigured(): Response {
+  return Response.json(
+    {
+      success: false,
+      error: "Radar is not configured. Set RADAR_SECRET_KEY and NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY.",
+    },
+    { status: 503 },
+  );
+}
+
+/** 409 for points sent to a trip no phone has started. */
+export function tripNotStarted(): Response {
+  return Response.json(
+    { success: false, error: "Radar trip has not been started — call POST /start first." },
+    { status: 409 },
+  );
+}
+
 export function unauthorized(): Response {
   return Response.json({ error: "Unauthorized" }, { status: 401 });
 }

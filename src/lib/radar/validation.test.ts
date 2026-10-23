@@ -1,33 +1,89 @@
 import { describe, expect, it } from "vitest";
 
-import { parseAfter, parseBulkLocations, parseLocation, parseStartTrip } from "./validation";
+import {
+  parseAfter,
+  parseBulkLocations,
+  parseLocation,
+  parsePlanTrip,
+  parseStartTrip,
+  parseStatusFilter,
+} from "./validation";
 
 const START = { latitude: 21.1702, longitude: 72.8311, radiusMeters: 300 };
 const DESTINATION = { latitude: 21.1832, longitude: 72.8441, radiusMeters: 300 };
 
 describe("parseStartTrip", () => {
-  it("accepts a device id and two fences", () => {
-    expect(parseStartTrip({ deviceId: " device-1 ", start: START, destination: DESTINATION })).toEqual({
+  it("accepts a device id, trimmed", () => {
+    expect(parseStartTrip({ deviceId: " device-1 " })).toEqual({
       ok: true,
-      value: { deviceId: "device-1", start: START, destination: DESTINATION },
+      value: { deviceId: "device-1" },
     });
   });
 
   it("requires a device id", () => {
-    const parsed = parseStartTrip({ start: START, destination: DESTINATION });
-    expect(parsed.ok).toBe(false);
+    expect(parseStartTrip({}).ok).toBe(false);
+    expect(parseStartTrip(undefined).ok).toBe(false);
+  });
+
+  it("ignores the ends an older app build still sends", () => {
+    expect(parseStartTrip({ deviceId: "d", start: START, destination: DESTINATION })).toEqual({
+      ok: true,
+      value: { deviceId: "d" },
+    });
+  });
+});
+
+describe("parsePlanTrip", () => {
+  it("accepts two ends, with or without an address", () => {
+    expect(
+      parsePlanTrip({ start: { ...START, address: " Surat Station " }, destination: DESTINATION }),
+    ).toEqual({
+      ok: true,
+      value: {
+        start: { ...START, address: "Surat Station" },
+        destination: { ...DESTINATION, address: null },
+      },
+    });
+  });
+
+  it("treats an empty address as none", () => {
+    const parsed = parsePlanTrip({ start: { ...START, address: "" }, destination: DESTINATION });
+    expect(parsed.ok && parsed.value.start.address).toBeNull();
   });
 
   it("enforces Radar's 10 km circle limit", () => {
-    const parsed = parseStartTrip({
-      deviceId: "d",
-      start: START,
-      destination: { ...DESTINATION, radiusMeters: 10_001 },
-    });
-    expect(parsed).toEqual({
+    expect(
+      parsePlanTrip({ start: START, destination: { ...DESTINATION, radiusMeters: 10_001 } }),
+    ).toEqual({
       ok: false,
       error: "destination.radiusMeters must be a whole number between 50 and 10000.",
     });
+  });
+
+  it("names the end that is missing", () => {
+    expect(parsePlanTrip({ start: START })).toEqual({
+      ok: false,
+      error: "destination is required — an object with latitude, longitude and radiusMeters.",
+    });
+  });
+
+  it("rejects an address that is not a string", () => {
+    expect(parsePlanTrip({ start: { ...START, address: 42 }, destination: DESTINATION }).ok).toBe(false);
+  });
+});
+
+describe("parseStatusFilter", () => {
+  it("is optional", () => {
+    expect(parseStatusFilter(null)).toEqual({ ok: true, value: null });
+    expect(parseStatusFilter("")).toEqual({ ok: true, value: null });
+  });
+
+  it("accepts a lifecycle in any case", () => {
+    expect(parseStatusFilter("planned")).toEqual({ ok: true, value: "PLANNED" });
+  });
+
+  it("rejects anything else", () => {
+    expect(parseStatusFilter("DONE").ok).toBe(false);
   });
 });
 

@@ -1,4 +1,10 @@
-import type { RadarEventView, RadarGeofenceTarget, RadarLocationView, RadarTripView } from "./types";
+import type {
+  RadarEventView,
+  RadarGeofenceTarget,
+  RadarLocationView,
+  RadarTripView,
+  TripEnd,
+} from "./types";
 
 /**
  * Pure helpers for the Radar trip pages. Client-safe: no Prisma, no secrets.
@@ -78,6 +84,11 @@ export function isMilestone(event: RadarEventView): boolean {
 export function arrivalTime(trip: Pick<RadarTripView, "eta" | "radarUpdatedAt">): Date | null {
   if (!trip.eta || !trip.radarUpdatedAt) return null;
   return new Date(Date.parse(trip.radarUpdatedAt) + trip.eta.minutes * 60_000);
+}
+
+/** A trip end by its address, or by its coordinates when it was entered as such. */
+export function endLabel(end: TripEnd): string {
+  return end.address ?? `${end.latitude.toFixed(5)}, ${end.longitude.toFixed(5)}`;
 }
 
 /** `112400` → `112.4 km`, `850` → `850 m`. */

@@ -1,4 +1,4 @@
-import { badRequest, readJson, tripNotFound } from "@/lib/radar/http";
+import { badRequest, readJson, tripNotFound, tripNotStarted } from "@/lib/radar/http";
 import { recordLocations } from "@/lib/radar/service";
 import { parseBulkLocations } from "@/lib/radar/validation";
 
@@ -19,7 +19,8 @@ export async function POST(
   const { tripId } = await context.params;
   const result = await recordLocations(tripId, parsed.value);
 
-  if (!result.found) return tripNotFound();
+  if (result.outcome === "not_found") return tripNotFound();
+  if (result.outcome === "not_started") return tripNotStarted();
 
   return Response.json({
     success: true,

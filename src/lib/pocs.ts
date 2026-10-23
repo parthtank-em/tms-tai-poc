@@ -47,7 +47,8 @@ export const pocs: Poc[] = [
   {
     title: "Radar Geofencing",
     shortTitle: "Radar",
-    description: "Trips tracked with the Radar SDK: geofence events, trip status and ETA on a map.",
+    description:
+      "Trips planned with Radar routing and tracked with the Radar SDK: geofence events, trip status and ETA.",
     href: "/radar-tracking",
   },
 ];

@@ -863,8 +863,10 @@ model TrackingGeofenceEvent {
 // written by the /tracking POC.
 // ---------------------------------------------------------------------------
 
-/// Our own lifecycle: ACTIVE until Stop, whatever Radar says about the trip.
+/// Our own lifecycle: PLANNED on the web portal, ACTIVE from the phone's Start
+/// until its Stop, whatever Radar says about the trip in between.
 enum RadarTripLifecycle {
+  PLANNED
   ACTIVE
   COMPLETED
 }
@@ -887,20 +889,35 @@ enum RadarGeofenceTarget {
 
 /// One trip. The id doubles as the Radar trip's `externalId` and as the
 /// `externalId` of both Radar geofences, so a webhook names its trip directly.
+///
+/// Planned on the web portal; nothing exists in Radar until a phone starts it,
+/// because the fences and the Radar trip are scoped to that phone's user.
 model RadarTrip {
   id        String             @id @default(uuid())
-  /// Also the Radar `userId` — the SDK is told `Radar.setUserId(deviceId)`.
-  deviceId  String             @map("device_id")
-  status    RadarTripLifecycle @default(ACTIVE)
-  startedAt DateTime           @default(now()) @map("started_at")
+  /// The phone that started the trip, null while PLANNED. Also the Radar
+  /// `userId` — the SDK is told `Radar.setUserId(deviceId)`.
+  deviceId  String?            @map("device_id")
+  status    RadarTripLifecycle @default(PLANNED)
+  /// When a phone started the trip, null while PLANNED.
+  startedAt DateTime?          @map("started_at")
   endedAt   DateTime?          @map("ended_at")
 
+  /// The address picked on the portal, or null when the point was entered as
+  /// coordinates (and for trips from before the portal planned them).
+  startAddress            String? @map("start_address")
   startLatitude           Decimal @db.Decimal(10, 7) @map("start_latitude")
   startLongitude          Decimal @db.Decimal(10, 7) @map("start_longitude")
   startRadiusMeters       Int     @map("start_radius_meters")
+  destinationAddress      String? @map("destination_address")
   destinationLatitude     Decimal @db.Decimal(10, 7) @map("destination_latitude")
   destinationLongitude    Decimal @db.Decimal(10, 7) @map("destination_longitude")
   destinationRadiusMeters Int     @map("destination_radius_meters")
+
+  /// Radar's car route between the two points, computed when the trip was
+  /// planned. `plannedRoute` is the GeoJSON LineString's coordinates.
+  plannedDistanceMeters  Int?   @map("planned_distance_meters")
+  plannedDurationMinutes Float? @map("planned_duration_minutes")
+  plannedRoute           Json?  @map("planned_route")
 
   /// Radar's own id for the trip, from the create response.
   radarTripId String?          @map("radar_trip_id")
@@ -926,6 +943,7 @@ model RadarTrip {
 
   @@index([deviceId, startedAt])
   @@index([status])
+  @@index([createdAt])
   @@map("radar_trips")
 }
 

@@ -1,14 +1,14 @@
-import { getSession } from "@/lib/auth/guard";
-import { tripNotFound, unauthorized } from "@/lib/radar/http";
+import { tripNotFound } from "@/lib/radar/http";
 import { findTrip } from "@/lib/radar/service";
 
-/** `GET /api/radar-tracking/trips/{tripId}` — one trip. Console login required. */
+/**
+ * `GET /api/radar-tracking/trips/{tripId}` — one trip, for the phone's trip
+ * detail screen. Unauthenticated, like the other device endpoints.
+ */
 export async function GET(
   _request: Request,
   context: { params: Promise<{ tripId: string }> },
 ): Promise<Response> {
-  if (!(await getSession())) return unauthorized();
-
   const { tripId } = await context.params;
   const trip = await findTrip(tripId);
 

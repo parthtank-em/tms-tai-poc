@@ -1,17 +1,22 @@
-import type { Geofence, LocationInput } from "./types";
+import type { Geofence, LocationInput, RadarTripLifecycle, TripEnd } from "./types";
 
 /**
- * Request-body parsing for the Radar POC's device endpoints.
+ * Request-body parsing for the Radar POC: the device endpoints and the
+ * portal's trip planner.
  *
  * A separate copy of the /tracking rules rather than an import, so either POC
  * can change its contract without touching the other. The error strings go
  * straight back to a mobile developer, so they name the field and the index.
+ *
+ * Client-safe (no Prisma), so the planner form checks the same rules before it
+ * calls the server.
  */
 
 export type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 
 const MAX_ID_LENGTH = 100;
 const MAX_DEVICE_ID_LENGTH = 200;
+const MAX_ADDRESS_LENGTH = 500;
 
 /** A day offline at one fix a minute, with room to spare. */
 export const MAX_BULK_LOCATIONS = 1_000;
@@ -51,11 +56,12 @@ function timestamp(value: unknown): Date | null {
 
 export type StartTripInput = {
   deviceId: string;
-  start: Geofence;
-  destination: Geofence;
 };
 
-/** No distance or ETA here, unlike /tracking: Radar computes both. */
+/**
+ * The phone's Start: only who is driving. Where to and the fences were fixed
+ * when the trip was planned on the portal.
+ */
 export function parseStartTrip(body: unknown): Parsed<StartTripInput> {
   const deviceId = isRecord(body) ? nonEmptyString(body.deviceId, MAX_DEVICE_ID_LENGTH) : null;
 
@@ -66,15 +72,57 @@ export function parseStartTrip(body: unknown): Parsed<StartTripInput> {
     };
   }
 
-  const record = body as Record<string, unknown>;
+  return { ok: true, value: { deviceId } };
+}
 
-  const start = parseGeofence(record.start, "start");
+export type PlanTripInput = {
+  start: TripEnd;
+  destination: TripEnd;
+};
+
+/** A trip as planned on the portal: two ends, each a point, a fence radius and an optional address. */
+export function parsePlanTrip(body: unknown): Parsed<PlanTripInput> {
+  const record = isRecord(body) ? body : {};
+
+  const start = parseTripEnd(record.start, "start");
   if (!start.ok) return start;
 
-  const destination = parseGeofence(record.destination, "destination");
+  const destination = parseTripEnd(record.destination, "destination");
   if (!destination.ok) return destination;
 
-  return { ok: true, value: { deviceId, start: start.value, destination: destination.value } };
+  return { ok: true, value: { start: start.value, destination: destination.value } };
+}
+
+function parseTripEnd(value: unknown, label: string): Parsed<TripEnd> {
+  const geofence = parseGeofence(value, label);
+  if (!geofence.ok) return geofence;
+
+  // Optional: a point entered as coordinates has no address.
+  const raw = (value as Record<string, unknown>).address;
+  let address: string | null = null;
+  if (raw !== undefined && raw !== null && raw !== "") {
+    address = nonEmptyString(raw, MAX_ADDRESS_LENGTH);
+    if (address === null) {
+      return {
+        ok: false,
+        error: `${label}.address must be a string of at most ${MAX_ADDRESS_LENGTH} characters.`,
+      };
+    }
+  }
+
+  return { ok: true, value: { ...geofence.value, address } };
+}
+
+const LIFECYCLES: readonly RadarTripLifecycle[] = ["PLANNED", "ACTIVE", "COMPLETED"];
+
+/** `?status=` on the trip list. Absent means every trip. */
+export function parseStatusFilter(value: string | null): Parsed<RadarTripLifecycle | null> {
+  if (value === null || value === "") return { ok: true, value: null };
+
+  const status = LIFECYCLES.find((candidate) => candidate === value.toUpperCase());
+  return status
+    ? { ok: true, value: status }
+    : { ok: false, error: `status must be one of ${LIFECYCLES.join(", ")}.` };
 }
 
 function parseGeofence(value: unknown, label: string): Parsed<Geofence> {

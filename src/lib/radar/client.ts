@@ -1,11 +1,12 @@
-import { DESTINATION_GEOFENCE_TAG, START_GEOFENCE_TAG, TRIP_MODE, type RadarConfig } from "./config";
-import type { Geofence, RadarGeofenceTarget } from "./types";
+import { DESTINATION_GEOFENCE_TAG, START_GEOFENCE_TAG, ROUTE_MODE, TRIP_MODE, type RadarConfig } from "./config";
+import type { Coordinates, Geofence, RadarGeofenceTarget } from "./types";
 
 /**
  * Thin client for the Radar REST API — only the calls the server makes.
  *
  * Everything location-related (track, replay, entering and leaving fences) is
- * the SDK's job on the phone; the server only sets a trip up and tears it down.
+ * the SDK's job on the phone; the server only plans a trip (address search,
+ * route), sets it up in Radar and tears it down.
  *
  * Auth is the raw key in `Authorization`, no `Bearer`.
  *
@@ -30,7 +31,7 @@ export function geofenceTag(target: RadarGeofenceTarget): string {
 async function request<T>(
   config: RadarConfig,
   key: string,
-  method: "PUT" | "POST" | "PATCH" | "DELETE",
+  method: "GET" | "PUT" | "POST" | "PATCH" | "DELETE",
   path: string,
   body?: Record<string, unknown>,
 ): Promise<RadarResult<T>> {
@@ -133,4 +134,48 @@ export function updateTripStatus(
   status: "completed" | "canceled",
 ): Promise<RadarResult<unknown>> {
   return request(config, config.publishableKey, "PATCH", `/trips/${tripId}/update`, { status });
+}
+
+
+/** One mode's route: distance in meters, duration in minutes, GeoJSON line. */
+export type RadarRouteResponse = {
+  distance?: { value: number };
+  duration?: { value: number };
+  geometry?: { type: "LineString"; coordinates: [number, number][] };
+};
+
+/**
+ * Enough to draw a long route smoothly. Radar's full geometry runs to tens of
+ * thousands of points for a long drive, and it is stored on the trip and sent
+ * to the browser.
+ */
+const ROUTE_GEOMETRY_POINTS = 500;
+
+/** Radar's road route between two points, by truck (see ROUTE_MODE). */
+export async function routeDistance(
+  config: RadarConfig,
+  origin: Coordinates,
+  destination: Coordinates,
+): Promise<RadarResult<RadarRouteResponse>> {
+  const params = new URLSearchParams({
+    origin: `${origin.latitude},${origin.longitude}`,
+    destination: `${destination.latitude},${destination.longitude}`,
+    modes: ROUTE_MODE,
+    units: "metric",
+    geometry: "linestring",
+    geometryPoints: String(ROUTE_GEOMETRY_POINTS),
+  });
+  const result = await request<{ routes?: Partial<Record<string, RadarRouteResponse>> }>(
+    config,
+    config.publishableKey,
+    "GET",
+    `/route/distance?${params}`,
+  );
+
+  if (!result.ok) return result;
+
+  const route = result.data.routes?.[ROUTE_MODE];
+  if (!route) return { ok: false, message: `Radar found no ${ROUTE_MODE} route between the two points.` };
+
+  return { ok: true, data: route };
 }

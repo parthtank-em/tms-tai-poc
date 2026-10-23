@@ -1,7 +1,7 @@
-import { EyeIcon, SmartphoneIcon } from "lucide-react";
+import { EyeIcon, PlusIcon, SmartphoneIcon } from "lucide-react";
 import Link from "next/link";
 
-import { RadarTripStatusBadge, TripLifecycleBadge } from "@/components/radar-tracking/trip-badges";
+import { TripLifecycleBadge } from "@/components/radar-tracking/trip-badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -12,7 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDateTime, formatNumber } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
 import { getRadarConfig, getRadarWebhookToken } from "@/lib/radar/config";
 import { arrivalTime, formatMinutes } from "@/lib/radar/display";
 import { listTrips } from "@/lib/radar/service";
@@ -22,7 +22,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Radar geofencing · FreightID",
-  description: "Trips tracked with the Radar SDK: geofence events, trip status and ETA.",
+  description: "Trips planned here and tracked with the Radar SDK: geofence events, trip status and ETA.",
 };
 
 export default async function RadarTripsPage() {
@@ -38,15 +38,21 @@ export default async function RadarTripsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Radar trips</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Radar decides when a device enters or leaves a fence and computes the ETA (car mode).
-            Open a trip to see its route and events.
+            Plan a trip here; a driver starts it from the mobile app. Radar then decides when the
+            device enters or exits a fence and computes the ETA (car mode).
           </p>
         </div>
 
-        <Button render={<Link href="/radar-tracking/simulator" />} variant="outline">
-          <SmartphoneIcon />
-          Simulator
-        </Button>
+        <div className="flex gap-2">
+          <Button render={<Link href="/radar-tracking/simulator" />} variant="outline">
+            <SmartphoneIcon />
+            Simulator
+          </Button>
+          <Button render={<Link href="/radar-tracking/new" />}>
+            <PlusIcon />
+            Add trip
+          </Button>
+        </div>
       </header>
 
       {missing.length > 0 && (
@@ -61,7 +67,10 @@ export default async function RadarTripsPage() {
           <CardHeader>
             <CardTitle>No trips yet</CardTitle>
             <CardDescription>
-              Start one from the mobile app, or from the{" "}
+              <Link href="/radar-tracking/new" className="underline underline-offset-4">
+                Add a trip
+              </Link>
+              , then start it from the mobile app or the{" "}
               <Link href="/radar-tracking/simulator" className="underline underline-offset-4">
                 simulator
               </Link>
@@ -75,13 +84,9 @@ export default async function RadarTripsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Trip</TableHead>
-                <TableHead>Device</TableHead>
                 <TableHead>Started</TableHead>
-                <TableHead>Radar status</TableHead>
                 <TableHead>ETA</TableHead>
                 <TableHead>Arrived</TableHead>
-                <TableHead className="text-right">Points</TableHead>
-                <TableHead className="text-right">Events</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-0" />
               </TableRow>
@@ -92,10 +97,12 @@ export default async function RadarTripsPage() {
                   <TableCell className="font-mono text-xs" title={trip.id}>
                     {trip.id.slice(0, 8)}
                   </TableCell>
-                  <TableCell>{trip.deviceId}</TableCell>
-                  <TableCell>{formatDateTime(new Date(trip.startedAt))}</TableCell>
                   <TableCell>
-                    <RadarTripStatusBadge status={trip.tripStatus} />
+                    {trip.startedAt ? (
+                      formatDateTime(new Date(trip.startedAt))
+                    ) : (
+                      <span className="text-muted-foreground">Not started</span>
+                    )}
                   </TableCell>
                   <TableCell>
                     {trip.eta ? (
@@ -111,12 +118,6 @@ export default async function RadarTripsPage() {
                   </TableCell>
                   <TableCell>
                     {formatDateTime(trip.arrivedAt ? new Date(trip.arrivedAt) : null)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatNumber(trip.locationCount)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatNumber(trip.eventCount)}
                   </TableCell>
                   <TableCell>
                     <TripLifecycleBadge status={trip.status} />

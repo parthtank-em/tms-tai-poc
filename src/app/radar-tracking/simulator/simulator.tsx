@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLinkIcon, PlayIcon, SendIcon, SquareIcon, WifiIcon, WifiOffIcon } from "lucide-react";
+import { ExternalLinkIcon, PlayIcon, RefreshCwIcon, SendIcon, SquareIcon, WifiIcon, WifiOffIcon } from "lucide-react";
 import Link from "next/link";
 import type RadarType from "radar-sdk-js";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -9,12 +9,22 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { formatDateTimeSeconds } from "@/lib/format";
-import { eventLabel, formatDistance, formatMinutes } from "@/lib/radar/display";
-import type { RadarGeofenceTarget } from "@/lib/radar/types";
+import { endLabel, eventLabel, formatDistance, formatMinutes } from "@/lib/radar/display";
+import type { RadarGeofenceTarget, RadarTripView } from "@/lib/radar/types";
 
 /**
  * A browser stand-in for the mobile app, driving **real Radar**.
+ *
+ * Like the app, it lists the trips planned on the portal and starts one; the
+ * server then creates that trip's fences and Radar trip for this device.
  *
  * Each step sends the simulated position to Radar with the web SDK's
  * `trackOnce({ latitude, longitude })`, exactly as the phone's SDK would track
@@ -38,11 +48,6 @@ const PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY;
 /** Radar allows one track per second per device; leave headroom. */
 const MIN_INTERVAL_SECONDS = 2;
 const DEFAULT_INTERVAL_SECONDS = 5;
-
-/** Surat, as in the /tracking examples. */
-const DEFAULT_START = { latitude: 21.1702, longitude: 72.8311 };
-const DEFAULT_DESTINATION = { latitude: 21.1832, longitude: 72.8441 };
-const DEFAULT_RADIUS_METERS = 300;
 
 /** A simulated fix this good, so Radar does not discard it as too inaccurate. */
 const SIMULATED_ACCURACY_METERS = 10;
@@ -90,6 +95,12 @@ const TAG_TARGET: Record<string, RadarGeofenceTarget> = {
   "tms-radar-dest": "DESTINATION",
 };
 
+async function fetchPlannedTrips(): Promise<RadarTripView[]> {
+  const response = await fetch("/api/radar-tracking/trips?status=PLANNED", { cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()) as RadarTripView[];
+}
+
 async function post(
   url: string,
   body?: unknown,
@@ -107,11 +118,8 @@ async function post(
 export function Simulator() {
   const [deviceId, setDeviceId] = useState("radar-simulator-1");
   const [intervalSeconds, setIntervalSeconds] = useState(DEFAULT_INTERVAL_SECONDS);
-  const [start, setStart] = useState({ ...DEFAULT_START, radiusMeters: DEFAULT_RADIUS_METERS });
-  const [destination, setDestination] = useState({
-    ...DEFAULT_DESTINATION,
-    radiusMeters: DEFAULT_RADIUS_METERS,
-  });
+  const [plannedTrips, setPlannedTrips] = useState<RadarTripView[] | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const [tripId, setTripId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -126,8 +134,8 @@ export function Simulator() {
 
   // The tick runs from a timer, so it reads the latest values through refs.
   const radar = useRef<typeof RadarType | null>(null);
-  const walk = useRef<Point>(DEFAULT_START);
-  const destinationRef = useRef<Point>(DEFAULT_DESTINATION);
+  const walk = useRef<Point | null>(null);
+  const destinationRef = useRef<Point | null>(null);
   const onlineRef = useRef(online);
   const tripRef = useRef(tripId);
 
@@ -139,6 +147,29 @@ export function Simulator() {
   const addLog = useCallback((text: string, tone: LogEntry["tone"] = "info") => {
     setLog((entries) => [{ at: new Date(), text, tone }, ...entries].slice(0, 150));
   }, []);
+
+  /** The trips a phone could start, as the app's trip list shows them. */
+  const loadPlannedTrips = useCallback(
+    () =>
+      fetchPlannedTrips().then(
+        (trips) => {
+          setPlannedTrips(trips);
+          setSelectedId((current) =>
+            current && trips.some((trip) => trip.id === current) ? current : (trips[0]?.id ?? null),
+          );
+        },
+        (error: Error) => {
+          setPlannedTrips([]);
+          addLog(`Could not load planned trips: ${error.message}`, "error");
+        },
+      ),
+    [addLog],
+  );
+
+  // Fetched once on mount, like the app's list screen.
+  useEffect(() => {
+    void loadPlannedTrips();
+  }, [loadPlannedTrips]);
 
   /** Loaded on first use: the SDK touches browser globals and must not run on the server. */
   const loadRadar = useCallback(async (userId: string) => {
@@ -182,7 +213,7 @@ export function Simulator() {
 
   const tick = useCallback(async () => {
     const trip = tripRef.current;
-    if (!trip) return;
+    if (!trip || !walk.current || !destinationRef.current) return;
 
     const next = nextPosition(walk.current, destinationRef.current);
     walk.current = next;
@@ -242,25 +273,30 @@ export function Simulator() {
   }
 
   async function startTrip() {
+    const selected = plannedTrips?.find((trip) => trip.id === selectedId);
+    if (!selected) return;
+
     setBusy(true);
     try {
       const id = deviceId.trim();
       await loadRadar(id);
 
-      // Radar creates a user on its first track, and the trip below names that
-      // user — so the device reports where it is before the trip exists.
+      // Radar creates a user on its first track, and the fences and trip the
+      // server creates below name that user — so the device reports where it
+      // is before pressing Start.
       addLog("Tracking the start position so Radar knows the user");
-      await trackWithRadar(start);
+      await trackWithRadar(selected.start);
 
-      const result = await post("/api/radar-tracking/trips", { deviceId: id, start, destination });
+      const result = await post(`/api/radar-tracking/trips/${selected.id}/start`, { deviceId: id });
       if (!result.ok) {
         addLog(`Start failed: ${String(result.json.error ?? `HTTP ${result.status}`)}`, "error");
+        if (result.status === 409 || result.status === 404) await loadPlannedTrips();
         return;
       }
 
       const newTripId = String(result.json.tripId);
-      walk.current = { latitude: start.latitude, longitude: start.longitude };
-      destinationRef.current = destination;
+      walk.current = { latitude: selected.start.latitude, longitude: selected.start.longitude };
+      destinationRef.current = selected.destination;
       tripRef.current = newTripId;
       setTripId(newTripId);
       setQueue([]);
@@ -299,6 +335,7 @@ export function Simulator() {
       if (result.json.radarSyncError) {
         addLog(`Radar sync error: ${String(result.json.radarSyncError)}`, "error");
       }
+      await loadPlannedTrips();
     } finally {
       setBusy(false);
     }
@@ -324,6 +361,7 @@ export function Simulator() {
   }
 
   const active = running && tripId !== null;
+  const selected = plannedTrips?.find((trip) => trip.id === selectedId) ?? null;
 
   if (!PUBLISHABLE_KEY) {
     return (
@@ -369,15 +407,57 @@ export function Simulator() {
             />
           </Field>
 
-          <TripEnd id="start" title="Start" value={start} onChange={setStart} disabled={active} />
-          <TripEnd
-            id="destination"
-            title="Destination"
-            hint="The walk drifts toward it in 80–200 m steps and parks there on arrival."
-            value={destination}
-            onChange={setDestination}
-            disabled={active}
-          />
+          <Field
+            id="trip"
+            label="Planned trip"
+            hint="The walk starts at the source and drifts toward the destination in 80–200 m steps, parking there on arrival."
+          >
+            <div className="flex gap-2">
+              <Select
+                value={selectedId}
+                onValueChange={(value) => setSelectedId(value as string)}
+                disabled={active || !plannedTrips?.length}
+              >
+                <SelectTrigger id="trip" className="h-8 w-full min-w-0">
+                  <SelectValue>
+                    {() =>
+                      selected
+                        ? `${selected.id.slice(0, 8)} · ${endLabel(selected.start)} → ${endLabel(selected.destination)}`
+                        : plannedTrips === null
+                          ? "Loading…"
+                          : "No planned trips"
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="max-h-72">
+                  {(plannedTrips ?? []).map((trip) => (
+                    <SelectItem key={trip.id} value={trip.id}>
+                      {trip.id.slice(0, 8)} · {endLabel(trip.start)} → {endLabel(trip.destination)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="icon-sm"
+                onClick={() => void loadPlannedTrips()}
+                disabled={active}
+                aria-label="Reload planned trips"
+              >
+                <RefreshCwIcon />
+              </Button>
+            </div>
+          </Field>
+
+          {plannedTrips?.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No planned trips.{" "}
+              <Link href="/radar-tracking/new" className="underline underline-offset-4">
+                Add one
+              </Link>{" "}
+              on the portal first.
+            </p>
+          )}
 
           <div className="flex flex-wrap gap-2 pt-2">
             {active ? (
@@ -386,9 +466,9 @@ export function Simulator() {
                 Stop
               </Button>
             ) : (
-              <Button onClick={startTrip} disabled={busy || !deviceId.trim()}>
+              <Button onClick={startTrip} disabled={busy || !deviceId.trim() || !selected}>
                 <PlayIcon />
-                Start new trip
+                Start trip
               </Button>
             )}
 
@@ -506,66 +586,6 @@ function Field({
     <div className="grid gap-1.5">
       <Label htmlFor={id}>{label}</Label>
       {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  );
-}
-
-type TripEndValue = Point & { radiusMeters: number };
-
-function TripEnd({
-  id,
-  title,
-  hint,
-  value,
-  onChange,
-  disabled,
-}: {
-  id: string;
-  title: string;
-  hint?: string;
-  value: TripEndValue;
-  onChange: (value: TripEndValue) => void;
-  disabled: boolean;
-}) {
-  return (
-    <div className="grid gap-3 rounded-lg border p-3">
-      <p className="text-sm font-medium">{title}</p>
-      <div className="grid grid-cols-3 gap-3">
-        <Field id={`${id}-lat`} label="Latitude">
-          <Input
-            id={`${id}-lat`}
-            type="number"
-            step="any"
-            value={value.latitude}
-            onChange={(event) => onChange({ ...value, latitude: Number(event.target.value) })}
-            disabled={disabled}
-          />
-        </Field>
-        <Field id={`${id}-lng`} label="Longitude">
-          <Input
-            id={`${id}-lng`}
-            type="number"
-            step="any"
-            value={value.longitude}
-            onChange={(event) => onChange({ ...value, longitude: Number(event.target.value) })}
-            disabled={disabled}
-          />
-        </Field>
-        <Field id={`${id}-radius`} label="Geofence (m)">
-          <Input
-            id={`${id}-radius`}
-            type="number"
-            min={50}
-            max={10_000}
-            value={value.radiusMeters}
-            onChange={(event) =>
-              onChange({ ...value, radiusMeters: Math.round(Number(event.target.value)) || 50 })
-            }
-            disabled={disabled}
-          />
-        </Field>
-      </div>
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
   );

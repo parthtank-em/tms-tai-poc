@@ -6,7 +6,7 @@
  * database client into the browser bundle.
  */
 
-export type RadarTripLifecycle = "ACTIVE" | "COMPLETED";
+export type RadarTripLifecycle = "PLANNED" | "ACTIVE" | "COMPLETED";
 
 export const RADAR_TRIP_STATUSES = [
   "PENDING",
@@ -23,11 +23,17 @@ export type RadarTripStatus = (typeof RADAR_TRIP_STATUSES)[number];
 
 export type RadarGeofenceTarget = "START" | "DESTINATION";
 
+export type Coordinates = { latitude: number; longitude: number };
+
 /** A trip end and the radius of the Radar geofence around it. */
-export type Geofence = {
-  latitude: number;
-  longitude: number;
+export type Geofence = Coordinates & {
   radiusMeters: number;
+};
+
+/** A trip end as planned on the portal: the fence, plus the address it was picked from. */
+export type TripEnd = Geofence & {
+  /** Null when the point was entered as coordinates. */
+  address: string | null;
 };
 
 export type RadarEta = {
@@ -35,16 +41,27 @@ export type RadarEta = {
   distanceMeters: number | null;
 };
 
+/** Radar's car route between the two ends, from when the trip was planned. */
+export type PlannedRoute = {
+  distanceMeters: number;
+  durationMinutes: number;
+};
+
 export type RadarTripView = {
   id: string;
-  deviceId: string;
+  /** Null while PLANNED — no phone has started the trip yet. */
+  deviceId: string | null;
   status: RadarTripLifecycle;
   /** Null until Radar has acknowledged the trip. */
   tripStatus: RadarTripStatus | null;
-  startedAt: string;
+  createdAt: string;
+  /** Null while PLANNED. */
+  startedAt: string | null;
   endedAt: string | null;
-  start: Geofence;
-  destination: Geofence;
+  start: TripEnd;
+  destination: TripEnd;
+  /** Null for trips from before the portal planned them. */
+  planned: PlannedRoute | null;
   eta: RadarEta | null;
   /** When the status and ETA happened on the device, per Radar. */
   radarUpdatedAt: string | null;
@@ -81,6 +98,11 @@ export type RadarEventView = {
 export type RadarFeed = {
   /** Fresh on every poll — status and ETA change without a new location. */
   trip: RadarTripView;
+  /**
+   * The planned route's line, `[longitude, latitude]` pairs. Only on the first
+   * load (no `after`): it never changes, so polls do not resend it.
+   */
+  plannedPath: [number, number][] | null;
   /** Ordered by `capturedAt` ascending. */
   locations: RadarLocationView[];
   /** Ordered by `actualCreatedAt` ascending. */
@@ -91,6 +113,12 @@ export type RadarFeed = {
    * picked up even though it carries an old timestamp.
    */
   cursor: string | null;
+};
+
+/** A route preview: the planned figures plus the line to draw. */
+export type RoutePreview = PlannedRoute & {
+  /** `[longitude, latitude]` pairs, GeoJSON order. */
+  path: [number, number][];
 };
 
 /** What a device sends for one position. */

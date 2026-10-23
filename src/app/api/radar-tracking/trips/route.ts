@@ -1,65 +1,45 @@
-import { getSession } from "@/lib/auth/guard";
-import { DESTINATION_GEOFENCE_TAG, START_GEOFENCE_TAG, TRIP_MODE } from "@/lib/radar/config";
-import { badRequest, readJson, unauthorized } from "@/lib/radar/http";
-import { listTrips, startTrip } from "@/lib/radar/service";
-import { parseStartTrip } from "@/lib/radar/validation";
+import { badRequest, radarUnconfigured, readJson } from "@/lib/radar/http";
+import { listTrips, planTrip } from "@/lib/radar/service";
+import { parsePlanTrip, parseStatusFilter } from "@/lib/radar/validation";
 
 /**
- * `POST /api/radar-tracking/trips` — the device pressed Start.
+ * `GET /api/radar-tracking/trips[?status=PLANNED]` — every trip, newest first.
  *
- * Creates both Radar geofences and the Radar trip before answering, so by the
- * time the phone has a `tripId` Radar is ready to evaluate its locations. The
- * `radar` block is what the phone needs if it also calls `Radar.startTrip`.
+ * The phone's trip list: it shows the PLANNED ones a driver can start.
  *
- * Unauthenticated, like the /tracking device endpoints: the mobile app has no
+ * Unauthenticated, like the other device endpoints: the mobile app has no
  * console session. Revisit before anything real reports here.
  */
-export async function POST(request: Request): Promise<Response> {
-  const parsed = parseStartTrip(await readJson(request));
-  if (!parsed.ok) return badRequest(parsed.error);
+export async function GET(request: Request): Promise<Response> {
+  const status = parseStatusFilter(new URL(request.url).searchParams.get("status"));
+  if (!status.ok) return badRequest(status.error);
 
-  const result = await startTrip(parsed.value);
-
-  if (result.outcome === "unconfigured") {
-    return Response.json(
-      {
-        success: false,
-        error: "Radar is not configured. Set RADAR_SECRET_KEY and NEXT_PUBLIC_RADAR_PUBLISHABLE_KEY.",
-      },
-      { status: 503 },
-    );
-  }
-
-  if (result.outcome === "radar_failed") {
-    return Response.json({ success: false, error: result.message }, { status: 502 });
-  }
-
-  const { trip } = result;
-
-  return Response.json(
-    {
-      tripId: trip.id,
-      status: trip.status,
-      tripStatus: trip.tripStatus,
-      startedAt: trip.startedAt,
-      start: trip.start,
-      destination: trip.destination,
-      radar: {
-        userId: trip.deviceId,
-        externalId: trip.id,
-        mode: TRIP_MODE,
-        startGeofenceTag: START_GEOFENCE_TAG,
-        destinationGeofenceTag: DESTINATION_GEOFENCE_TAG,
-        destinationGeofenceExternalId: trip.id,
-      },
-    },
-    { status: 201 },
-  );
+  return Response.json(await listTrips(status.value));
 }
 
-/** `GET /api/radar-tracking/trips` — every trip, newest first. Console login required. */
-export async function GET(): Promise<Response> {
-  if (!(await getSession())) return unauthorized();
+/**
+ * `POST /api/radar-tracking/trips` — the phone plans a trip, as the portal's
+ * Add trip does: two ends, each a point, a geofence radius and an optional
+ * address. Radar's car route is computed and stored with it.
+ *
+ * The trip is PLANNED, not started — the phone starts it with
+ * `POST /trips/{tripId}/start`, the same as a trip planned on the portal. So
+ * there is one lifecycle, and Radar's fences are only ever created at Start.
+ *
+ * Unauthenticated, like the other device endpoints.
+ */
+export async function POST(request: Request): Promise<Response> {
+  const parsed = parsePlanTrip(await readJson(request));
+  if (!parsed.ok) return badRequest(parsed.error);
 
-  return Response.json(await listTrips());
+  const result = await planTrip(parsed.value);
+
+  switch (result.outcome) {
+    case "unconfigured":
+      return radarUnconfigured();
+    case "radar_failed":
+      return Response.json({ success: false, error: result.message }, { status: 502 });
+    case "planned":
+      return Response.json(result.trip, { status: 201 });
+  }
 }

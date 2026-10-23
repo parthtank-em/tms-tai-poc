@@ -4,6 +4,13 @@ import type { RadarTripLifecycle, RadarTripStatus } from "@/lib/radar/types";
 /** Our own lifecycle. Active trips pulse, so a live one stands out in a long list. */
 export function TripLifecycleBadge({ status }: { status: RadarTripLifecycle }) {
   if (status === "COMPLETED") return <Badge variant="outline">Completed</Badge>;
+  if (status === "PLANNED") {
+    return (
+      <Badge variant="outline" className="text-blue-700 dark:text-blue-400">
+        Planned
+      </Badge>
+    );
+  }
 
   return (
     <Badge variant="secondary">

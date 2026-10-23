@@ -1,18 +1,15 @@
 "use client";
 
-import {
-  AdvancedMarker,
-  APIProvider,
-  Circle,
-  InfoWindow,
-  Map,
-  Pin,
-  Polyline,
-  useMap,
-} from "@vis.gl/react-google-maps";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import {
+  GoogleMapsProvider,
+  TripMapView,
+  type MapFence,
+  type MapLine,
+  type MapMarker,
+} from "@/components/radar-tracking/trip-map-view";
 import { RadarTripStatusBadge, TripLifecycleBadge } from "@/components/radar-tracking/trip-badges";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,6 +25,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDateTimeSeconds, formatNumber } from "@/lib/format";
 import {
   arrivalTime,
+  endLabel,
   eventLabel,
   formatDistance,
   formatMinutes,
@@ -36,87 +34,42 @@ import {
   mergeLocations,
   wasReplayed,
 } from "@/lib/radar/display";
-import type {
-  Geofence,
-  RadarEventView,
-  RadarFeed,
-  RadarGeofenceTarget,
-  RadarLocationView,
-} from "@/lib/radar/types";
+import type { RadarEventView, RadarFeed, RadarLocationView } from "@/lib/radar/types";
 
 /**
  * The Radar trip map. Deliberately its own component rather than an import of
  * the /tracking session map, so the two POCs can change independently.
  *
- * The route line is what the phone forwards; the geofence and trip state is
- * what Radar reported by webhook. Radar events carry a position, so the
- * milestones are pinned where they happened.
+ * The dashed line is the route planned on the portal; the solid one is what
+ * the phone forwards; the geofence and trip state is what Radar reported by
+ * webhook. Radar events carry a position, so the milestones are pinned where
+ * they happened.
+ *
+ * A planned trip polls too, so the page notices when a phone starts it.
  */
 
 const POLL_INTERVAL_MS = 5_000;
 
-const API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-
-/** Advanced markers need a map ID; Google's demo ID works until a real one is set. */
-const MAP_ID = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID";
-
-/** Beyond this, per-point dots cost more in DOM than they add in clarity. */
-const MAX_POINT_MARKERS = 300;
-
 const TABLE_ROWS = 25;
 
-const METERS_PER_DEGREE_LATITUDE = 111_320;
-
-type Coordinates = { latitude: number; longitude: number };
-
-const toLatLng = ({ latitude, longitude }: Coordinates): google.maps.LatLngLiteral => ({
-  lat: latitude,
-  lng: longitude,
-});
-
-function radiusInDegrees(geofence: Geofence) {
-  const latitude = geofence.radiusMeters / METERS_PER_DEGREE_LATITUDE;
-  const longitude = latitude / Math.cos((geofence.latitude * Math.PI) / 180);
-  return { latitude, longitude };
-}
-
-type Fence = { target: RadarGeofenceTarget; label: string; color: string; geofence: Geofence };
-
-function boundsOf(
-  locations: RadarLocationView[],
-  fences: Fence[],
-): google.maps.LatLngBoundsLiteral {
-  const latitudes = locations.map((location) => location.latitude);
-  const longitudes = locations.map((location) => location.longitude);
-  for (const { geofence } of fences) {
-    const radius = radiusInDegrees(geofence);
-    latitudes.push(geofence.latitude - radius.latitude, geofence.latitude + radius.latitude);
-    longitudes.push(geofence.longitude - radius.longitude, geofence.longitude + radius.longitude);
-  }
-
-  return {
-    south: Math.min(...latitudes),
-    west: Math.min(...longitudes),
-    north: Math.max(...latitudes),
-    east: Math.max(...longitudes),
-  };
-}
-
-type Hovered = Coordinates & { capturedAt: string; accuracy: number | null };
+const START_COLOR = "#16a34a";
+const DESTINATION_COLOR = "#dc2626";
+const PLANNED_COLOR = "#64748b";
+const DRIVEN_COLOR = "#7c3aed";
 
 /** Pin colour per milestone, so the map reads without opening the table. */
 function eventColor(event: RadarEventView): string {
   switch (event.type) {
     case "user.exited_geofence":
-      return "bg-amber-500";
+      return "#f59e0b";
     case "user.entered_geofence":
-      return "bg-emerald-600";
+      return "#059669";
     case "user.approaching_trip_destination":
-      return "bg-orange-500";
+      return "#f97316";
     case "user.arrived_at_trip_destination":
-      return "bg-red-600";
+      return "#dc2626";
     default:
-      return "bg-slate-600";
+      return "#475569";
   }
 }
 
@@ -128,15 +81,13 @@ export function TripMap({ initial }: { initial: RadarFeed }) {
   const [lastPolledAt, setLastPolledAt] = useState<Date | null>(null);
   const [pollFailed, setPollFailed] = useState(false);
   const [follow, setFollow] = useState(true);
-  const [hovered, setHovered] = useState<Hovered | null>(null);
-  const [selectedEvent, setSelectedEvent] = useState<RadarEventView | null>(null);
   const cursor = useRef(initial.cursor);
 
   const tripId = trip.id;
   const status = trip.status;
 
   useEffect(() => {
-    if (status !== "ACTIVE") return;
+    if (status === "COMPLETED") return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -162,8 +113,9 @@ export function TripMap({ initial }: { initial: RadarFeed }) {
         setLastPolledAt(new Date());
         setPollFailed(false);
 
-        if (payload.trip.status !== "ACTIVE") {
-          // The header's "ended" time comes from the server render.
+        if (payload.trip.status !== status) {
+          // The header (device, started, ended) and its buttons come from the
+          // server render. This effect re-runs for the new status.
           router.refresh();
           return;
         }
@@ -183,111 +135,65 @@ export function TripMap({ initial }: { initial: RadarFeed }) {
     };
   }, [tripId, status, router]);
 
-  const fences = useMemo<Fence[]>(
-    () => [
-      { target: "START", label: "Start", color: "#16a34a", geofence: trip.start },
-      { target: "DESTINATION", label: "Destination", color: "#dc2626", geofence: trip.destination },
-    ],
-    [trip.start, trip.destination],
-  );
+  const active = status === "ACTIVE";
+  const last = locations.at(-1);
 
-  const milestones = events.filter(
-    (event) => isMilestone(event) && event.latitude !== null && event.longitude !== null,
-  );
+  // What the map draws: both geofences, the planned and driven routes, and markers.
+  const fences: MapFence[] = [
+    { key: "start", geofence: trip.start, color: START_COLOR },
+    { key: "destination", geofence: trip.destination, color: DESTINATION_COLOR },
+  ];
+
+  const lines: MapLine[] = [
+    {
+      key: "driven",
+      path: locations.map((location): [number, number] => [location.longitude, location.latitude]),
+      color: DRIVEN_COLOR,
+    },
+  ];
+  if (initial.plannedPath) {
+    lines.push({ key: "planned", path: initial.plannedPath, color: PLANNED_COLOR, dashed: true });
+  }
+
+  const markers: MapMarker[] = [
+    { key: "start", position: trip.start, color: START_COLOR, text: "Source" },
+    { key: "destination", position: trip.destination, color: DESTINATION_COLOR, text: "Destination" },
+  ];
+  // Radar events where they happened; click one to see what it was.
+  for (const event of events) {
+    if (!isMilestone(event) || event.latitude === null || event.longitude === null) continue;
+    markers.push({
+      key: event.id,
+      position: { latitude: event.latitude, longitude: event.longitude },
+      color: eventColor(event),
+      text: `${eventLabel(event)} · ${formatDateTimeSeconds(new Date(event.actualCreatedAt))}`,
+    });
+  }
+  if (last) {
+    markers.push({
+      key: "last",
+      position: last,
+      color: DRIVEN_COLOR,
+      text: active ? "Current position" : "Last position",
+    });
+  }
+
   const replayedCount = events.filter(wasReplayed).length;
-  const center = locations.at(0) ?? trip.start;
   const arrival = arrivalTime(trip);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_18rem]">
       <div className="h-[32rem] overflow-hidden rounded-xl border bg-muted">
-        {API_KEY ? (
-          <APIProvider apiKey={API_KEY}>
-            <Map
-              mapId={MAP_ID}
-              defaultCenter={toLatLng(center)}
-              defaultZoom={14}
-              gestureHandling="greedy"
-              disableDefaultUI
-              zoomControl
-              style={{ width: "100%", height: "100%" }}
-            >
-              {fences.map((fence) => (
-                <GeofenceCircle key={fence.target} fence={fence} />
-              ))}
-              <Route locations={locations} active={status === "ACTIVE"} onHover={setHovered} />
-
-              <AdvancedMarker position={toLatLng(trip.destination)} zIndex={1}>
-                <span className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow">
-                  Destination
-                </span>
-              </AdvancedMarker>
-
-              {milestones.map((event) => (
-                <AdvancedMarker
-                  key={event.id}
-                  position={{ lat: event.latitude!, lng: event.longitude! }}
-                  anchorLeft="-50%"
-                  anchorTop="-50%"
-                  zIndex={3}
-                  title={eventLabel(event)}
-                  onClick={() => setSelectedEvent(event)}
-                >
-                  <span
-                    className={`block size-3.5 rotate-45 border-2 border-white shadow ${eventColor(event)}`}
-                  />
-                </AdvancedMarker>
-              ))}
-
-              {selectedEvent &&
-                selectedEvent.latitude !== null &&
-                selectedEvent.longitude !== null && (
-                  <InfoWindow
-                    position={{ lat: selectedEvent.latitude, lng: selectedEvent.longitude }}
-                    pixelOffset={[0, -10]}
-                    onCloseClick={() => setSelectedEvent(null)}
-                  >
-                    <span className="block text-xs font-medium">{eventLabel(selectedEvent)}</span>
-                    <span className="block text-xs">
-                      {formatDateTimeSeconds(new Date(selectedEvent.actualCreatedAt))}
-                    </span>
-                    {selectedEvent.confidence !== null && (
-                      <span className="block text-xs text-muted-foreground">
-                        Confidence {selectedEvent.confidence}/3
-                      </span>
-                    )}
-                  </InfoWindow>
-                )}
-
-              {hovered && (
-                <InfoWindow
-                  position={toLatLng(hovered)}
-                  headerDisabled
-                  disableAutoPan
-                  shouldFocus={false}
-                  pixelOffset={[0, -8]}
-                >
-                  <span className="block text-xs">
-                    {formatDateTimeSeconds(new Date(hovered.capturedAt))}
-                  </span>
-                  {hovered.accuracy !== null && (
-                    <span className="block text-xs text-muted-foreground">
-                      ±{Math.round(hovered.accuracy)} m
-                    </span>
-                  )}
-                </InfoWindow>
-              )}
-
-              <Viewport
-                locations={locations}
-                fences={fences}
-                follow={follow && status === "ACTIVE"}
-              />
-            </Map>
-          </APIProvider>
-        ) : (
-          <MissingKey />
-        )}
+        <GoogleMapsProvider>
+          <TripMapView
+            fences={fences}
+            lines={lines}
+            markers={markers}
+            fitKey={tripId}
+            panTo={follow && active ? last : null}
+            initialCenter={trip.start}
+          />
+        </GoogleMapsProvider>
       </div>
 
       <Card size="sm">
@@ -299,42 +205,68 @@ export function TripMap({ initial }: { initial: RadarFeed }) {
         </CardHeader>
         <CardContent>
           <dl className="grid gap-3 text-sm">
-            <Stat label="Radar status">
-              <RadarTripStatusBadge status={trip.tripStatus} />
-            </Stat>
-            <Stat label="ETA (car)">
-              {trip.eta ? (
-                <>
-                  {formatMinutes(trip.eta.minutes)} · {formatDistance(trip.eta.distanceMeters)}
-                  <span className="block text-xs text-muted-foreground">
-                    Arrival ≈ {formatDateTimeSeconds(arrival)}
-                  </span>
-                </>
-              ) : (
-                <span className="text-muted-foreground">Waiting for Radar</span>
-              )}
-            </Stat>
-            <Stat label="Exited start">
-              {formatDateTimeSeconds(trip.departedAt ? new Date(trip.departedAt) : null)}
-            </Stat>
-            <Stat label="Arrived">
-              {formatDateTimeSeconds(trip.arrivedAt ? new Date(trip.arrivedAt) : null)}
-            </Stat>
-            <Stat label="Radar events">
-              {formatNumber(events.length)}
-              {replayedCount > 0 && (
-                <span className="block text-xs text-muted-foreground">
-                  {formatNumber(replayedCount)} replayed from offline
-                </span>
-              )}
-            </Stat>
-            <Stat label="Route points">{formatNumber(locations.length)}</Stat>
-            <Stat label="Geofences">
-              <span className="text-xs text-muted-foreground">
-                Start {formatNumber(trip.start.radiusMeters)} m · destination{" "}
-                {formatNumber(trip.destination.radiusMeters)} m
+            <Stat label="Source">
+              <span className="break-words">{endLabel(trip.start)}</span>
+              <span className="block text-xs text-muted-foreground">
+                Geofence {formatNumber(trip.start.radiusMeters)} m
               </span>
             </Stat>
+            <Stat label="Destination">
+              <span className="break-words">{endLabel(trip.destination)}</span>
+              <span className="block text-xs text-muted-foreground">
+                Geofence {formatNumber(trip.destination.radiusMeters)} m
+              </span>
+            </Stat>
+            <Stat label="Planned route (truck)">
+              {trip.planned ? (
+                <>
+                  {formatDistance(trip.planned.distanceMeters)} ·{" "}
+                  {formatMinutes(trip.planned.durationMinutes)}
+                </>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </Stat>
+
+            {status === "PLANNED" ? (
+              <p className="rounded-lg bg-muted p-3 text-xs text-muted-foreground">
+                Waiting for a driver to start this trip from the mobile app. Its geofences are
+                created in Radar when they do.
+              </p>
+            ) : (
+              <>
+                <Stat label="Radar status">
+                  <RadarTripStatusBadge status={trip.tripStatus} />
+                </Stat>
+                <Stat label="ETA (car)">
+                  {trip.eta ? (
+                    <>
+                      {formatMinutes(trip.eta.minutes)} · {formatDistance(trip.eta.distanceMeters)}
+                      <span className="block text-xs text-muted-foreground">
+                        Arrival ≈ {formatDateTimeSeconds(arrival)}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">Waiting for Radar</span>
+                  )}
+                </Stat>
+                <Stat label="Exited start">
+                  {formatDateTimeSeconds(trip.departedAt ? new Date(trip.departedAt) : null)}
+                </Stat>
+                <Stat label="Arrived">
+                  {formatDateTimeSeconds(trip.arrivedAt ? new Date(trip.arrivedAt) : null)}
+                </Stat>
+                <Stat label="Radar events">
+                  {formatNumber(events.length)}
+                  {replayedCount > 0 && (
+                    <span className="block text-xs text-muted-foreground">
+                      {formatNumber(replayedCount)} replayed from offline
+                    </span>
+                  )}
+                </Stat>
+                <Stat label="Route points">{formatNumber(locations.length)}</Stat>
+              </>
+            )}
 
             {trip.radarSyncError && (
               <Stat label="Radar sync error">
@@ -344,43 +276,48 @@ export function TripMap({ initial }: { initial: RadarFeed }) {
               </Stat>
             )}
 
-            {status === "ACTIVE" && (
-              <>
-                <Stat label="Last refreshed">
-                  {lastPolledAt ? formatDateTimeSeconds(lastPolledAt) : "Waiting for first poll…"}
-                  {pollFailed && (
-                    <span className="block text-destructive">Last poll failed — retrying.</span>
-                  )}
-                </Stat>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={follow}
-                    onChange={(event) => setFollow(event.target.checked)}
-                    className="size-4 accent-primary"
-                  />
-                  Follow the current position
-                </label>
-              </>
+            {status !== "COMPLETED" && (
+              <Stat label="Last refreshed">
+                {lastPolledAt ? formatDateTimeSeconds(lastPolledAt) : "Waiting for first poll…"}
+                {pollFailed && (
+                  <span className="block text-destructive">Last poll failed — retrying.</span>
+                )}
+              </Stat>
             )}
+
+            {active && (
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={follow}
+                  onChange={(event) => setFollow(event.target.checked)}
+                  className="size-4 accent-primary"
+                />
+                Follow the current position
+              </label>
+            )}
+
+            <MapLegend planned={initial.plannedPath !== null} />
           </dl>
         </CardContent>
       </Card>
 
-      <div className="lg:col-span-2">
-        <Tabs defaultValue="events">
-          <TabsList>
-            <TabsTrigger value="events">Radar events ({formatNumber(events.length)})</TabsTrigger>
-            <TabsTrigger value="points">Route points ({formatNumber(locations.length)})</TabsTrigger>
-          </TabsList>
-          <TabsContent value="events" className="mt-2">
-            <EventTable events={events} />
-          </TabsContent>
-          <TabsContent value="points" className="mt-2">
-            <PointTable locations={locations} />
-          </TabsContent>
-        </Tabs>
-      </div>
+      {status !== "PLANNED" && (
+        <div className="lg:col-span-2">
+          <Tabs defaultValue="events">
+            <TabsList>
+              <TabsTrigger value="events">Radar events ({formatNumber(events.length)})</TabsTrigger>
+              <TabsTrigger value="points">Route points ({formatNumber(locations.length)})</TabsTrigger>
+            </TabsList>
+            <TabsContent value="events" className="mt-2">
+              <EventTable events={events} />
+            </TabsContent>
+            <TabsContent value="points" className="mt-2">
+              <PointTable locations={locations} />
+            </TabsContent>
+          </Tabs>
+        </div>
+      )}
     </div>
   );
 }
@@ -394,141 +331,18 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
-function GeofenceCircle({ fence }: { fence: Fence }) {
+function MapLegend({ planned }: { planned: boolean }) {
   return (
-    <Circle
-      center={toLatLng(fence.geofence)}
-      radius={fence.geofence.radiusMeters}
-      fillColor={fence.color}
-      fillOpacity={0.12}
-      strokeColor={fence.color}
-      strokeOpacity={0.9}
-      strokeWeight={2}
-      clickable={false}
-      zIndex={1}
-    />
-  );
-}
-
-/** The line, the per-point dots, and the start / current-or-end markers. */
-function Route({
-  locations,
-  active,
-  onHover,
-}: {
-  locations: RadarLocationView[];
-  active: boolean;
-  onHover: (point: Hovered | null) => void;
-}) {
-  const first = locations.at(0);
-  const last = locations.at(-1);
-  const path = useMemo(() => locations.map(toLatLng), [locations]);
-
-  return (
-    <>
-      <Polyline
-        path={path}
-        strokeColor="#7c3aed"
-        strokeOpacity={0.85}
-        strokeWeight={4}
-        clickable={false}
-        zIndex={2}
-      />
-
-      {locations.length <= MAX_POINT_MARKERS &&
-        locations.slice(1, -1).map((location) => (
-          <AdvancedMarker
-            key={location.id}
-            position={toLatLng(location)}
-            anchorLeft="-50%"
-            anchorTop="-50%"
-            onMouseEnter={() =>
-              onHover({
-                latitude: location.latitude,
-                longitude: location.longitude,
-                capturedAt: location.capturedAt,
-                accuracy: location.accuracy,
-              })
-            }
-            onMouseLeave={() => onHover(null)}
-          >
-            <span className="block size-3 rounded-full border-2 border-white bg-violet-600" />
-          </AdvancedMarker>
-        ))}
-
-      {first && (
-        <AdvancedMarker position={toLatLng(first)} title="Start" zIndex={1}>
-          <Pin background="#16a34a" borderColor="#15803d" glyphColor="#ffffff" />
-        </AdvancedMarker>
+    <div className="space-y-1 border-t pt-3 text-xs text-muted-foreground">
+      {planned && (
+        <p className="flex items-center gap-2">
+          <span className="w-5 border-t-2 border-dashed" style={{ borderColor: PLANNED_COLOR }} />
+          Planned route
+        </p>
       )}
-
-      {last && last !== first && active && (
-        <AdvancedMarker
-          key="current"
-          position={toLatLng(last)}
-          anchorLeft="-50%"
-          anchorTop="-50%"
-          zIndex={2}
-        >
-          <span className="relative flex size-5" title="Current position">
-            <span className="absolute inline-flex size-full animate-ping rounded-full bg-violet-500 opacity-60" />
-            <span className="relative inline-flex size-5 rounded-full border-[3px] border-white bg-violet-600 shadow" />
-          </span>
-        </AdvancedMarker>
-      )}
-
-      {last && last !== first && !active && (
-        <AdvancedMarker key="end" position={toLatLng(last)} title="End" zIndex={2}>
-          <Pin background="#dc2626" borderColor="#b91c1c" glyphColor="#ffffff" />
-        </AdvancedMarker>
-      )}
-    </>
-  );
-}
-
-/**
- * Frames the route and the fences once, then — only while following — pans to
- * each new current position. Never re-fits, so manual zoom is not undone.
- */
-function Viewport({
-  locations,
-  fences,
-  follow,
-}: {
-  locations: RadarLocationView[];
-  fences: Fence[];
-  follow: boolean;
-}) {
-  const map = useMap();
-  const framed = useRef(false);
-  const lastId = locations.at(-1)?.id;
-
-  useEffect(() => {
-    if (!map) return;
-
-    if (!framed.current) {
-      framed.current = true;
-      map.fitBounds(boundsOf(locations, fences), 48);
-      return;
-    }
-
-    const last = locations.at(-1);
-    if (follow && last) map.panTo(toLatLng(last));
-    // Re-run on a new latest point, not on every merge that changed nothing.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, lastId, follow]);
-
-  return null;
-}
-
-function MissingKey() {
-  return (
-    <div className="flex size-full flex-col items-center justify-center gap-2 p-6 text-center text-sm">
-      <p className="font-medium">Google Maps is not configured.</p>
-      <p className="max-w-sm text-muted-foreground">
-        Set <code className="font-mono">NEXT_PUBLIC_GOOGLE_MAPS_API_KEY</code> in{" "}
-        <code className="font-mono">.env</code> and restart the dev server. Events and points are
-        still listed below.
+      <p className="flex items-center gap-2">
+        <span className="w-5 border-t-[3px]" style={{ borderColor: DRIVEN_COLOR }} />
+        Driven route (from the phone)
       </p>
     </div>
   );

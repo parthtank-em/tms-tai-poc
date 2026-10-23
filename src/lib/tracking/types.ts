@@ -80,6 +80,27 @@ export type SessionView = {
   radarSyncError: string | null;
   locationCount: number;
   eventCount: number;
+  /** The route the driver should follow: 1 = planned, each reroute adds one. */
+  routeVersion: number;
+  /** When the driver was last rerouted, or null if never. */
+  reroutedAt: string | null;
+  /** The latest reroute's distance and time (Google, from where the driver left the route). */
+  rerouted: PlannedRoute | null;
+  /** The last Roads API failure snapping the driven line, or null. */
+  drivenRouteError: string | null;
+};
+
+/** The route the driver should follow now, as the phone draws it. */
+export type RouteView = {
+  version: number;
+  /** PLANNED for version 1; REROUTE after the driver left the route. */
+  source: "PLANNED" | "REROUTE";
+  distanceMeters: number;
+  durationMinutes: number;
+  /** Google encoded polyline (precision 5) — draw it with the Maps SDK. */
+  polyline: string;
+  /** When this route was made: planning time, or the reroute time. */
+  updatedAt: string;
 };
 
 export type LocationView = {
@@ -113,6 +134,16 @@ export type SessionFeed = {
    * load (no `after`): it never changes, so polls do not resend it.
    */
   plannedPath: [number, number][] | null;
+  /**
+   * The latest reroute's line. Sent on the first load and whenever the driver
+   * has been rerouted since `after`; otherwise null (keep the one you have).
+   */
+  currentPath: [number, number][] | null;
+  /**
+   * The driven points snapped to roads. Sent on the first load and whenever it
+   * was refreshed since `after`; otherwise null (keep the one you have).
+   */
+  drivenPath: [number, number][] | null;
   /** Ordered by `capturedAt` ascending. */
   locations: LocationView[];
   /** Ordered by `actualCreatedAt` ascending. */
@@ -123,6 +154,12 @@ export type SessionFeed = {
    * picked up even though it carries an old timestamp.
    */
   cursor: string | null;
+};
+
+/** What a device sends when it finds itself off the route. */
+export type RerouteInput = Coordinates & {
+  /** The route version the phone was following, so a stale request is not rerouted twice. */
+  routeVersion: number | null;
 };
 
 /** What a device sends for one position. */

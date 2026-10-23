@@ -1,5 +1,7 @@
+import { after } from "next/server";
+
 import { badRequest, readJson, sessionNotFound, sessionNotStarted } from "@/lib/tracking/http";
-import { recordLocations } from "@/lib/tracking/service";
+import { recordLocations, refreshDrivenRoute } from "@/lib/tracking/service";
 import { parseBulkLocations } from "@/lib/tracking/validation";
 
 /**
@@ -7,7 +9,9 @@ import { parseBulkLocations } from "@/lib/tracking/validation";
  *
  * Idempotent on location id: resending a batch after a lost response inserts
  * nothing new, and `inserted` says so. `skipped` lets the device tell a retry
- * apart from a first send.
+ * apart from a first send. `routeVersion` is the route to follow now.
+ *
+ * After answering, the driven line is snapped to roads again.
  */
 export async function POST(
   request: Request,
@@ -22,9 +26,12 @@ export async function POST(
   if (result.outcome === "not_found") return sessionNotFound();
   if (result.outcome === "not_started") return sessionNotStarted();
 
+  after(() => refreshDrivenRoute(sessionId));
+
   return Response.json({
     success: true,
     inserted: result.inserted,
     skipped: parsed.value.length - result.inserted,
+    routeVersion: result.routeVersion,
   });
 }

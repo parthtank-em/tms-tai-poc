@@ -2,7 +2,9 @@ import { prisma } from "@/lib/prisma";
 import { createTrip, deleteGeofence, updateTripStatus, upsertGeofence } from "@/lib/radar/client";
 import { getRadarConfig, type RadarConfig } from "@/lib/radar/config";
 
+import { isRoadsEnabled, snapToRoads } from "./google-roads";
 import { computeRoute, getGoogleRoutesKey } from "./google-routes";
+import { encodePolyline } from "./polyline";
 import {
   sessionGeofence,
   sessionTripExternalId,
@@ -15,7 +17,9 @@ import {
   type EventView,
   type LocationInput,
   type LocationView,
+  type RerouteInput,
   type RoutePreview,
+  type RouteView,
   type SessionFeed,
   type SessionView,
   type TrackingStatus,
@@ -63,6 +67,11 @@ const SESSION_SELECT = {
   departedAt: true,
   arrivedAt: true,
   radarSyncError: true,
+  routeVersion: true,
+  reroutedAt: true,
+  currentRouteDistanceMeters: true,
+  currentRouteDurationMinutes: true,
+  drivenRouteError: true,
   _count: { select: { locations: true, events: true } },
 } as const;
 
@@ -90,6 +99,11 @@ type SessionRow = {
   departedAt: Date | null;
   arrivedAt: Date | null;
   radarSyncError: string | null;
+  routeVersion: number;
+  reroutedAt: Date | null;
+  currentRouteDistanceMeters: number | null;
+  currentRouteDurationMinutes: number | null;
+  drivenRouteError: string | null;
   _count: { locations: number; events: number };
 };
 
@@ -128,6 +142,13 @@ function toSessionView(row: SessionRow): SessionView {
     radarSyncError: row.radarSyncError,
     locationCount: row._count.locations,
     eventCount: row._count.events,
+    routeVersion: row.routeVersion,
+    reroutedAt: row.reroutedAt?.toISOString() ?? null,
+    rerouted:
+      row.currentRouteDistanceMeters === null || row.currentRouteDurationMinutes === null
+        ? null
+        : { distanceMeters: row.currentRouteDistanceMeters, durationMinutes: row.currentRouteDurationMinutes },
+    drivenRouteError: row.drivenRouteError,
   };
 }
 
@@ -380,7 +401,7 @@ export async function findPlannedPath(sessionId: string): Promise<[number, numbe
 }
 
 export type RecordLocationsResult =
-  | { outcome: "recorded"; inserted: number }
+  | { outcome: "recorded"; inserted: number; routeVersion: number }
   | { outcome: "not_found" }
   | { outcome: "not_started" };
 
@@ -391,6 +412,9 @@ export type RecordLocationsResult =
  * A COMPLETED session still accepts points: a phone that pressed Stop while
  * offline flushes its queue afterwards, and those points are still the route.
  * A PLANNED one does not — no phone is driving it.
+ *
+ * Answers with the current route version, so a phone that is behind (another
+ * device rerouted, or a reroute response was lost) knows to fetch the route.
  */
 export async function recordLocations(
   sessionId: string,
@@ -398,7 +422,7 @@ export async function recordLocations(
 ): Promise<RecordLocationsResult> {
   const session = await prisma.trackingSession.findUnique({
     where: { id: sessionId },
-    select: { status: true },
+    select: { status: true, routeVersion: true },
   });
   if (!session) return { outcome: "not_found" };
   if (session.status === "PLANNED") return { outcome: "not_started" };
@@ -408,7 +432,196 @@ export async function recordLocations(
     skipDuplicates: true,
   });
 
-  return { outcome: "recorded", inserted: count };
+  return { outcome: "recorded", inserted: count, routeVersion: session.routeVersion };
+}
+
+// ---------------------------------------------------------------------------
+// Rerouting — the phone notices it left the route, the server asks Google for
+// a new one, and every viewer picks it up by its version number.
+// ---------------------------------------------------------------------------
+
+/** One reroute per minute at most: GPS can wobble across the threshold. */
+const REROUTE_COOLDOWN_MS = 60_000;
+
+const ROUTE_SELECT = {
+  createdAt: true,
+  routeVersion: true,
+  plannedRoute: true,
+  plannedDistanceMeters: true,
+  plannedDurationMinutes: true,
+  currentRoute: true,
+  currentRouteDistanceMeters: true,
+  currentRouteDurationMinutes: true,
+  reroutedAt: true,
+} as const;
+
+type RouteRow = {
+  createdAt: Date;
+  routeVersion: number;
+  plannedRoute: unknown;
+  plannedDistanceMeters: number | null;
+  plannedDurationMinutes: number | null;
+  currentRoute: unknown;
+  currentRouteDistanceMeters: number | null;
+  currentRouteDurationMinutes: number | null;
+  reroutedAt: Date | null;
+};
+
+/** The route to follow now: the latest reroute, or the planned route before any. */
+function toRouteView(row: RouteRow): RouteView | null {
+  const rerouted = row.routeVersion > 1;
+  const path = toPath(rerouted ? row.currentRoute : row.plannedRoute);
+  const distanceMeters = rerouted ? row.currentRouteDistanceMeters : row.plannedDistanceMeters;
+  const durationMinutes = rerouted ? row.currentRouteDurationMinutes : row.plannedDurationMinutes;
+
+  if (!path || distanceMeters === null || durationMinutes === null) return null;
+
+  return {
+    version: row.routeVersion,
+    source: rerouted ? "REROUTE" : "PLANNED",
+    distanceMeters,
+    durationMinutes,
+    polyline: encodePolyline(path),
+    updatedAt: ((rerouted ? row.reroutedAt : null) ?? row.createdAt).toISOString(),
+  };
+}
+
+export async function getCurrentRoute(
+  sessionId: string,
+): Promise<{ outcome: "found"; route: RouteView | null } | { outcome: "not_found" }> {
+  const row = await prisma.trackingSession.findUnique({ where: { id: sessionId }, select: ROUTE_SELECT });
+  return row ? { outcome: "found", route: toRouteView(row) } : { outcome: "not_found" };
+}
+
+export type RerouteResult =
+  | { outcome: "rerouted"; route: RouteView }
+  | { outcome: "current"; route: RouteView | null }
+  | { outcome: "not_found" }
+  | { outcome: "not_active" }
+  | { outcome: "unconfigured" }
+  | { outcome: "google_failed"; message: string };
+
+/**
+ * The phone found itself off the route: route again from where it is to the
+ * destination with Google, and make that the route to follow (the previous
+ * reroute is replaced; the planned route stays).
+ *
+ * No new route — just the current one back — when the phone was following an
+ * older version (someone already rerouted), or within a minute of the last
+ * reroute. The version bump is a conditional write, so two requests racing
+ * produce one reroute.
+ */
+export async function rerouteSession(sessionId: string, input: RerouteInput): Promise<RerouteResult> {
+  const session = await prisma.trackingSession.findUnique({
+    where: { id: sessionId },
+    select: { ...ROUTE_SELECT, status: true, destinationLatitude: true, destinationLongitude: true },
+  });
+
+  if (!session) return { outcome: "not_found" };
+  if (session.status !== "ACTIVE") return { outcome: "not_active" };
+
+  const current = () => ({ outcome: "current" as const, route: toRouteView(session) });
+
+  if (input.routeVersion !== null && input.routeVersion < session.routeVersion) return current();
+  if (session.reroutedAt && Date.now() - session.reroutedAt.getTime() < REROUTE_COOLDOWN_MS) {
+    return current();
+  }
+
+  const routed = await previewRoute(input, {
+    latitude: toNumber(session.destinationLatitude),
+    longitude: toNumber(session.destinationLongitude),
+  });
+  if (routed.outcome !== "routed") return routed;
+
+  const now = new Date();
+  const { count } = await prisma.trackingSession.updateMany({
+    where: { id: sessionId, status: "ACTIVE", routeVersion: session.routeVersion },
+    data: {
+      routeVersion: session.routeVersion + 1,
+      currentRoute: routed.route.path,
+      currentRouteDistanceMeters: routed.route.distanceMeters,
+      currentRouteDurationMinutes: routed.route.durationMinutes,
+      reroutedAt: now,
+    },
+  });
+
+  if (count === 0) {
+    // Another request rerouted first; answer with what it made.
+    const latest = await getCurrentRoute(sessionId);
+    return { outcome: "current", route: latest.outcome === "found" ? latest.route : null };
+  }
+
+  const route = toRouteView({
+    ...session,
+    routeVersion: session.routeVersion + 1,
+    currentRoute: routed.route.path,
+    currentRouteDistanceMeters: routed.route.distanceMeters,
+    currentRouteDurationMinutes: routed.route.durationMinutes,
+    reroutedAt: now,
+  })!;
+
+  return { outcome: "rerouted", route };
+}
+
+// ---------------------------------------------------------------------------
+// The driven line, snapped to roads — the dashboard's view of the road the
+// driver actually took.
+// ---------------------------------------------------------------------------
+
+/** Snap again once this many new points arrived, or the last snap is this old. */
+const SNAP_EVERY_POINTS = 10;
+const SNAP_MAX_AGE_MS = 5 * 60_000;
+
+/**
+ * Re-snaps all of a session's points to roads with Google's Roads API and
+ * stores the line. Whole-route rather than incremental, so an offline batch
+ * that lands in the middle is snapped in its place.
+ *
+ * Called after location uploads (rate-limited by the constants above) and at
+ * Stop with `force`. Does nothing unless GOOGLE_ROADS_ENABLED is "true".
+ * Failures are kept in `drivenRouteError`; the page then shows the raw points
+ * instead.
+ */
+export async function refreshDrivenRoute(sessionId: string, options: { force?: boolean } = {}): Promise<void> {
+  if (!isRoadsEnabled()) return;
+
+  const apiKey = getGoogleRoutesKey();
+  if (!apiKey) return;
+
+  const session = await prisma.trackingSession.findUnique({
+    where: { id: sessionId },
+    select: { drivenRouteLocationCount: true, drivenRouteUpdatedAt: true },
+  });
+  if (!session) return;
+
+  const count = await prisma.trackingLocation.count({ where: { sessionId } });
+  const newPoints = count - session.drivenRouteLocationCount;
+  if (count < 2 || newPoints <= 0) return;
+
+  const recent =
+    session.drivenRouteUpdatedAt && Date.now() - session.drivenRouteUpdatedAt.getTime() < SNAP_MAX_AGE_MS;
+  if (!options.force && newPoints < SNAP_EVERY_POINTS && recent) return;
+
+  const rows = await prisma.trackingLocation.findMany({
+    where: { sessionId },
+    orderBy: [{ capturedAt: "asc" }, { id: "asc" }],
+    select: { latitude: true, longitude: true },
+  });
+  const points = rows.map((row) => ({ latitude: toNumber(row.latitude), longitude: toNumber(row.longitude) }));
+
+  const snapped = await snapToRoads(apiKey, points);
+
+  // Counted either way, so a failing key is not retried on every upload.
+  await prisma.trackingSession.update({
+    where: { id: sessionId },
+    data: {
+      drivenRouteLocationCount: count,
+      drivenRouteUpdatedAt: new Date(),
+      ...(snapped.ok
+        ? { drivenRoute: snapped.path, drivenRouteError: null }
+        : { drivenRouteError: snapped.message }),
+    },
+  });
 }
 
 export type StopResult =
@@ -490,6 +703,10 @@ async function closeRadarTrip(sessionId: string): Promise<void> {
  *
  * The planned route's line comes only with the first load: it is fixed once
  * the session is started, and resending it every five seconds would be waste.
+ * The reroute line and the snapped driven line come with the first load and
+ * whenever they changed at or after `after`. They do not move the cursor —
+ * that stays on rows — so a change is sent until the next row arrives, which
+ * is harmless and cannot skip a row.
  */
 export async function getFeed(sessionId: string, after: Date | null): Promise<SessionFeed | null> {
   const session = await findSession(sessionId);
@@ -497,7 +714,7 @@ export async function getFeed(sessionId: string, after: Date | null): Promise<Se
 
   const where = { sessionId, ...(after ? { receivedAt: { gte: after } } : {}) };
 
-  const [locationRows, eventRows, planned] = await Promise.all([
+  const [locationRows, eventRows, lines] = await Promise.all([
     prisma.trackingLocation.findMany({
       where,
       orderBy: [{ capturedAt: "asc" }, { id: "asc" }],
@@ -525,10 +742,19 @@ export async function getFeed(sessionId: string, after: Date | null): Promise<Se
         receivedAt: true,
       },
     }),
-    after
-      ? null
-      : prisma.trackingSession.findUnique({ where: { id: sessionId }, select: { plannedRoute: true } }),
+    prisma.trackingSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        plannedRoute: !after,
+        currentRoute: true,
+        reroutedAt: true,
+        drivenRoute: true,
+        drivenRouteUpdatedAt: true,
+      },
+    }),
   ]);
+
+  const changedSince = (at: Date | null | undefined) => !after || (!!at && at >= after);
 
   const locations: LocationView[] = locationRows.map((row) => ({
     id: row.id,
@@ -558,7 +784,9 @@ export async function getFeed(sessionId: string, after: Date | null): Promise<Se
 
   return {
     session,
-    plannedPath: toPath(planned?.plannedRoute),
+    plannedPath: toPath(lines?.plannedRoute),
+    currentPath: changedSince(lines?.reroutedAt) ? toPath(lines?.currentRoute) : null,
+    drivenPath: changedSince(lines?.drivenRouteUpdatedAt) ? toPath(lines?.drivenRoute) : null,
     locations,
     events,
     cursor: (latestReceived ?? after)?.toISOString() ?? null,

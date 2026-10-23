@@ -10,11 +10,13 @@ Mobile API reference: [radar-tracking-mobile-api.md](./radar-tracking-mobile-api
 
 ## 1. What changes compared with `/tracking`
 
-The two POCs now work the same way — portal (or optional phone) planning, Start by one phone creating two Radar fences and a Radar trip, live ETA and trip status by webhook, the same pages and the same mobile API shapes. **The one difference is where the planned route comes from:**
+The two POCs now work the same way — portal (or optional phone) planning, Start by one phone creating two Radar fences and a Radar trip, live ETA and trip status by webhook, the same pages and the same mobile API shapes. **The differences are routing — where the planned route comes from — and the /tracking-only rerouting built on it:**
 
 | | `/tracking` | `/radar-tracking` (this POC) |
 |---|---|---|
 | Planned route, distance, ETA (Preview / Submit / `POST` create) | **Google Routes API** — drive, traffic-aware | **Radar route API** — truck |
+| Rerouting when the driver leaves the route | The app checks each fix against the route it draws and calls `POST /sessions/{id}/reroute`; the server routes again with Google and bumps `routeVersion` | Not built |
+| Driven line on the dashboard | Snapped to roads with the Google Roads API when `GOOGLE_ROADS_ENABLED=true`; raw GPS points otherwise | Raw GPS points |
 
 Everything else is the same, with each POC under its own names:
 

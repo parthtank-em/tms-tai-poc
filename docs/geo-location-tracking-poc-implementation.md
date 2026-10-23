@@ -6,7 +6,7 @@
 
 ## 0. What changed since this plan
 
-The POC now works **exactly like the Radar POC** ([radar-tracking-poc.md](./radar-tracking-poc.md), [mobile flow](./geo-location-tracking-mobile-flow.md)), with one difference: **the planned route, distance and ETA come from the Google Routes API** (drive, traffic-aware) instead of Radar's route API. The web maps are Google Maps; address search is Google Places.
+The POC now works **exactly like the Radar POC** ([radar-tracking-poc.md](./radar-tracking-poc.md), [mobile flow](./geo-location-tracking-mobile-flow.md)), with one difference: **the planned route, distance and ETA come from the Google Routes API** (drive, traffic-aware) instead of Radar's route API. The web maps are Google Maps; address search is Google Places. On top of that, this POC adds **rerouting** and a **driven line snapped to roads** (last two rows of the table).
 
 | This plan says | The code does now |
 |---|---|
@@ -16,6 +16,8 @@ The POC now works **exactly like the Radar POC** ([radar-tracking-poc.md](./rada
 | Two tables (§3, §4) | `tracking_sessions`, `tracking_locations`, `tracking_events` — column for column the same as the Radar POC's `radar_trips`, `radar_trip_locations`, `radar_events` (planned ends and route, Radar trip status, ETA, departure and arrival). The earlier phone-ETA columns and `tracking_geofence_events` were removed. |
 | Poll with `capturedAt > after` (§8) | The session page polls `GET /sessions/{id}/feed?after=…`, filtered on **`receivedAt >= after`**, so a late offline batch with old capture times is still returned. |
 | Stop only sets `COMPLETED` and `endedAt` (§5.4) | Also completes the Radar trip and deletes both fences. A Radar failure is kept in `radarSyncError` and does not fail the stop. |
+| No rerouting | The phone draws the route to follow (`GET /sessions/{id}/route`: version, distance, time, Google encoded polyline) and checks each GPS fix against it. When it is more than 250 m off for 2 fixes in a row, it calls `POST /sessions/{id}/reroute { latitude, longitude, routeVersion }`; the server gets a new Google route from that point to the destination and stores it as the route to follow (`route_version` + 1, `current_route*`, `rerouted_at`). Only the latest reroute is kept. No new route is made for an out-of-date version or within 60 s of the last reroute. Location responses carry `routeVersion`, so a phone knows when to fetch `/route` again. The dashboard draws the planned route and the current reroute. |
+| The map draws the raw GPS points | When `GOOGLE_ROADS_ENABLED="true"`, the server snaps the driven points to roads with the Google Roads API after locations arrive and at Stop (`driven_route*`), and the dashboard draws that line; a failure is kept in `drivenRouteError`. Off by default — then the dashboard draws the raw points. Nothing changes for the phone. |
 
 The rest of this document is the plan as originally written.
 

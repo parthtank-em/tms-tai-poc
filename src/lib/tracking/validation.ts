@@ -1,4 +1,4 @@
-import type { Geofence, LocationInput, TrackingStatus, TripEnd } from "./types";
+import type { Geofence, LocationInput, RerouteInput, TrackingStatus, TripEnd } from "./types";
 
 /**
  * Request-body parsing for the /tracking POC — the same rules as the Radar
@@ -233,6 +233,33 @@ export function parseBulkLocations(body: unknown): Parsed<LocationInput[]> {
 }
 
 /** `?after=` on the feed endpoint. Absent means "everything". */
+/**
+ * The phone's reroute request: where it is now, and the route version it was
+ * following (optional, but lets the server skip a request that is already
+ * out of date).
+ */
+export function parseReroute(body: unknown): Parsed<RerouteInput> {
+  if (!isRecord(body)) {
+    return { ok: false, error: "Body must be an object with latitude and longitude." };
+  }
+
+  const latitude = coordinate(body.latitude, 90);
+  if (latitude === null) return { ok: false, error: "latitude must be a number between -90 and 90." };
+
+  const longitude = coordinate(body.longitude, 180);
+  if (longitude === null) return { ok: false, error: "longitude must be a number between -180 and 180." };
+
+  let routeVersion: number | null = null;
+  if (body.routeVersion !== undefined && body.routeVersion !== null) {
+    if (typeof body.routeVersion !== "number" || !Number.isInteger(body.routeVersion) || body.routeVersion < 1) {
+      return { ok: false, error: "routeVersion must be a whole number of at least 1." };
+    }
+    routeVersion = body.routeVersion;
+  }
+
+  return { ok: true, value: { latitude, longitude, routeVersion } };
+}
+
 export function parseAfter(value: string | null): Parsed<Date | null> {
   if (value === null || value === "") return { ok: true, value: null };
 

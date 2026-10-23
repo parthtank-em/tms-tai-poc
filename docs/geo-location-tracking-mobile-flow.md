@@ -37,7 +37,7 @@ GET /api/tracking/sessions/{sessionId}
 
 ```json
 {
-  "id": "cmh3k2x9p0001ab12cd34ef56",
+  "id": "f61e6baf-e426-46ca-8fff-7243ae3d5cdd",
   "deviceId": null,
   "status": "PLANNED",
   "tripStatus": null,
@@ -63,7 +63,11 @@ GET /api/tracking/sessions/{sessionId}
   "arrivedAt": null,
   "radarSyncError": null,
   "locationCount": 0,
-  "eventCount": 0
+  "eventCount": 0,
+  "routeVersion": 1,
+  "reroutedAt": null,
+  "rerouted": null,
+  "drivenRouteError": null
 }
 ```
 
@@ -78,6 +82,9 @@ GET /api/tracking/sessions/{sessionId}
 | `departedAt` / `arrivedAt` | When the phone left the start / reached the destination geofence. |
 | `radarSyncError` | Last error talking to Radar, otherwise `null`. |
 | `locationCount` / `eventCount` | Points received and Radar events received for this trip. |
+| `routeVersion` | The route to follow: `1` = planned, each reroute adds one (see Step 3b). |
+| `reroutedAt` / `rerouted` | Time and `{ distanceMeters, durationMinutes }` of the last reroute; `null` if never rerouted. |
+| `drivenRouteError` | For the dashboard only — the phone can ignore it. |
 
 All times are ISO 8601 UTC strings.
 
@@ -119,7 +126,32 @@ POST /api/tracking/sessions/{sessionId}/start
 | `200` | Trip is now **ACTIVE** and belongs to this phone; our server has created the geofences and the Radar trip. Save `sessionId` permanently, call `Radar.startTracking(...)`, and optionally `Radar.startTrip(...)` with the `radar` block from the response. |
 | `409` with your `deviceId` | An earlier Start worked — continue as `200`. |
 | `409` with another `deviceId` | Another phone took the trip. Refresh the list. |
+| `404` | Trip no longer exists. Refresh the list. |
 | `502` | Radar failed. Nothing changed — let the driver tap Start again. |
+
+## Step 3b — Draw the route to follow
+
+Right after Start:
+
+```http
+GET /api/tracking/sessions/{sessionId}/route
+```
+
+```json
+{
+  "route": {
+    "version": 1,
+    "source": "PLANNED",
+    "distanceMeters": 142508,
+    "durationMinutes": 165.3,
+    "polyline": "u~`aCcz~{L…",
+    "updatedAt": "2026-10-23T08:30:00.000Z"
+  }
+}
+```
+
+- Draw `polyline` on the map (Android `PolyUtil.decode`, iOS `GMSPath(fromEncodedPath:)`).
+- Keep `version` — it tells you when the route changes.
 
 ## Step 4 — While driving, send each location
 
@@ -139,9 +171,25 @@ POST /api/tracking/sessions/{sessionId}/locations
 }
 ```
 
-- `200` → saved (`duplicate: true` also means success).
+- `200` → saved (`duplicate: true` also means success). The response has `routeVersion`: if it is higher than the version you draw, fetch Step 3b again and redraw.
 - Offline → keep points in a queue on the phone.
 - These points only draw the route line on the portal. Radar gets locations directly from its SDK.
+
+## Step 4b — Driver left the route: get a new one
+
+On **every GPS fix**, measure the distance from the fix to the route line you draw (local, free). If it is **more than 250 m for 2 fixes in a row** (skip fixes with accuracy worse than 100 m), and you are online:
+
+```http
+POST /api/tracking/sessions/{sessionId}/reroute
+```
+
+```json
+{ "latitude": 21.1905, "longitude": 72.8602, "routeVersion": 1 }
+```
+
+- `200` → draw the `route` in the response (same shape as Step 3b). `rerouted: true` = a new route from where the driver is to the destination (Google); `rerouted: false` = no new route this time (rerouted under a minute ago, or your version was old) — draw it anyway.
+- `502` → keep the route you have; try again on a later fix.
+- The dashboard shows the new route by itself.
 
 ## Step 5 — Back online, send the queued points
 
@@ -186,7 +234,9 @@ POST /api/tracking/sessions/{sessionId}/stop
 | 2 | Trip detail screen | `GET /sessions/{id}` |
 | 2b | New trip (optional) | `POST /sessions` |
 | 3 | Start tapped | `POST /sessions/{id}/start` |
+| 3b | After Start, and when `routeVersion` goes up | `GET /sessions/{id}/route` |
 | 4 | Each location | `POST /sessions/{id}/locations` |
+| 4b | Off the route (250 m, 2 fixes in a row) | `POST /sessions/{id}/reroute` |
 | 5 | Back online | `POST /sessions/{id}/locations/bulk` |
 | 6 | Stop tapped | `POST /sessions/{id}/stop` |
 

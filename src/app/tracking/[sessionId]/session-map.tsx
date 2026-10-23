@@ -56,6 +56,7 @@ const TABLE_ROWS = 25;
 const START_COLOR = "#16a34a";
 const DESTINATION_COLOR = "#dc2626";
 const PLANNED_COLOR = "#64748b";
+const REROUTE_COLOR = "#2563eb";
 const DRIVEN_COLOR = "#7c3aed";
 
 /** Pin colour per milestone, so the map reads without opening the table. */
@@ -79,6 +80,9 @@ export function SessionMap({ initial }: { initial: SessionFeed }) {
   const [trip, setTrip] = useState(initial.session);
   const [locations, setLocations] = useState(initial.locations);
   const [events, setEvents] = useState(initial.events);
+  // The latest reroute and the snapped driven line: replaced when a poll brings new ones.
+  const [currentPath, setCurrentPath] = useState(initial.currentPath);
+  const [drivenPath, setDrivenPath] = useState(initial.drivenPath);
   const [lastPolledAt, setLastPolledAt] = useState<Date | null>(null);
   const [pollFailed, setPollFailed] = useState(false);
   const [follow, setFollow] = useState(true);
@@ -111,6 +115,8 @@ export function SessionMap({ initial }: { initial: SessionFeed }) {
         setTrip(payload.session);
         setLocations((current) => mergeLocations(current, payload.locations));
         setEvents((current) => mergeEvents(current, payload.events));
+        if (payload.currentPath) setCurrentPath(payload.currentPath);
+        if (payload.drivenPath) setDrivenPath(payload.drivenPath);
         setLastPolledAt(new Date());
         setPollFailed(false);
 
@@ -145,15 +151,21 @@ export function SessionMap({ initial }: { initial: SessionFeed }) {
     { key: "destination", geofence: trip.destination, color: DESTINATION_COLOR },
   ];
 
+  // The driven line snapped to roads when the Roads API has made one, else the raw points.
   const lines: MapLine[] = [
     {
       key: "driven",
-      path: locations.map((location): [number, number] => [location.longitude, location.latitude]),
+      path:
+        drivenPath ??
+        locations.map((location): [number, number] => [location.longitude, location.latitude]),
       color: DRIVEN_COLOR,
     },
   ];
   if (initial.plannedPath) {
     lines.push({ key: "planned", path: initial.plannedPath, color: PLANNED_COLOR, dashed: true });
+  }
+  if (currentPath) {
+    lines.push({ key: "reroute", path: currentPath, color: REROUTE_COLOR });
   }
 
   const markers: MapMarker[] = [
@@ -228,6 +240,16 @@ export function SessionMap({ initial }: { initial: SessionFeed }) {
                 <span className="text-muted-foreground">—</span>
               )}
             </Stat>
+            {trip.rerouted && (
+              <Stat label={`Rerouted (route v${trip.routeVersion})`}>
+                {formatDistance(trip.rerouted.distanceMeters)} ·{" "}
+                {formatMinutes(trip.rerouted.durationMinutes)}
+                <span className="block text-xs text-muted-foreground">
+                  From where the driver left the route, at{" "}
+                  {formatDateTimeSeconds(trip.reroutedAt ? new Date(trip.reroutedAt) : null)}
+                </span>
+              </Stat>
+            )}
 
             {status === "PLANNED" ? (
               <p className="rounded-lg bg-muted p-3 text-xs text-muted-foreground">
@@ -298,7 +320,20 @@ export function SessionMap({ initial }: { initial: SessionFeed }) {
               </label>
             )}
 
-            <MapLegend planned={initial.plannedPath !== null} />
+            {trip.drivenRouteError && (
+              <Stat label="Snap to roads">
+                <span className="block whitespace-pre-wrap break-words text-xs text-destructive">
+                  {trip.drivenRouteError}
+                </span>
+                <span className="block text-xs text-muted-foreground">Showing the raw points instead.</span>
+              </Stat>
+            )}
+
+            <MapLegend
+              planned={initial.plannedPath !== null}
+              rerouted={currentPath !== null}
+              snapped={drivenPath !== null}
+            />
           </dl>
         </CardContent>
       </Card>
@@ -332,7 +367,15 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
-function MapLegend({ planned }: { planned: boolean }) {
+function MapLegend({
+  planned,
+  rerouted,
+  snapped,
+}: {
+  planned: boolean;
+  rerouted: boolean;
+  snapped: boolean;
+}) {
   return (
     <div className="space-y-1 border-t pt-3 text-xs text-muted-foreground">
       {planned && (
@@ -341,9 +384,15 @@ function MapLegend({ planned }: { planned: boolean }) {
           Planned route
         </p>
       )}
+      {rerouted && (
+        <p className="flex items-center gap-2">
+          <span className="w-5 border-t-[3px]" style={{ borderColor: REROUTE_COLOR }} />
+          New route after reroute
+        </p>
+      )}
       <p className="flex items-center gap-2">
         <span className="w-5 border-t-[3px]" style={{ borderColor: DRIVEN_COLOR }} />
-        Driven route (from the phone)
+        {snapped ? "Driven route (snapped to roads)" : "Driven route (from the phone)"}
       </p>
     </div>
   );

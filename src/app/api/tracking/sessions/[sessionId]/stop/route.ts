@@ -1,5 +1,7 @@
+import { after } from "next/server";
+
 import { sessionNotFound } from "@/lib/tracking/http";
-import { stopSession } from "@/lib/tracking/service";
+import { refreshDrivenRoute, stopSession } from "@/lib/tracking/service";
 
 /**
  * `POST /api/tracking/sessions/{sessionId}/stop` — the device pressed Stop.
@@ -18,6 +20,10 @@ export async function POST(
   const result = await stopSession(sessionId);
 
   if (result.outcome === "not_found") return sessionNotFound();
+
+  // The final snap of the driven line, with every point the phone sent live.
+  // Points flushed after Stop are snapped as they arrive.
+  if (result.outcome === "stopped") after(() => refreshDrivenRoute(sessionId, { force: true }));
 
   const { session } = result;
   const body = {

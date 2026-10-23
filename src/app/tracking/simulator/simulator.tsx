@@ -1,6 +1,15 @@
 "use client";
 
-import { ExternalLinkIcon, PlayIcon, RefreshCwIcon, SendIcon, SquareIcon, WifiIcon, WifiOffIcon } from "lucide-react";
+import {
+  ExternalLinkIcon,
+  PlayIcon,
+  RefreshCwIcon,
+  RouteIcon,
+  SendIcon,
+  SquareIcon,
+  WifiIcon,
+  WifiOffIcon,
+} from "lucide-react";
 import Link from "next/link";
 import type RadarType from "radar-sdk-js";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -18,7 +27,9 @@ import {
 } from "@/components/ui/select";
 import { formatDateTimeSeconds } from "@/lib/format";
 import { endLabel, eventLabel, formatDistance, formatMinutes } from "@/lib/tracking/display";
-import type { GeofenceTarget, SessionView } from "@/lib/tracking/types";
+import { decodePolyline } from "@/lib/tracking/polyline";
+import { distanceToPathMeters } from "@/lib/tracking/route-geometry";
+import type { GeofenceTarget, RouteView, SessionView } from "@/lib/tracking/types";
 
 /**
  * A browser stand-in for the mobile app, driving **real Radar** — a copy of the
@@ -73,12 +84,16 @@ function distanceMeters(a: Point, b: Point): number {
  * A walk that wanders but drifts toward the destination and parks on it once
  * within a step, so it arrives rather than circling the fence.
  */
-function nextPosition(from: Point, destination: Point): Point {
-  if (distanceMeters(from, destination) <= MAX_STEP_METERS) return destination;
+function nextPosition(from: Point, destination: Point, offRoute = false): Point {
+  if (!offRoute && distanceMeters(from, destination) <= MAX_STEP_METERS) return destination;
 
   const north = destination.latitude - from.latitude;
   const east = (destination.longitude - from.longitude) * Math.cos(toRadians(from.latitude));
-  const heading = Math.atan2(east, north) + (Math.random() - 0.5) * (Math.PI / 2);
+  // Off route: a steady right turn away from the destination, so the walk
+  // leaves the route line within a couple of steps.
+  const heading = offRoute
+    ? Math.atan2(east, north) + Math.PI / 2
+    : Math.atan2(east, north) + (Math.random() - 0.5) * (Math.PI / 2);
   const meters = MIN_STEP_METERS + Math.random() * (MAX_STEP_METERS - MIN_STEP_METERS);
 
   const round = (value: number) => Math.round(value * 1e7) / 1e7;
@@ -95,6 +110,20 @@ const TAG_TARGET: Record<string, GeofenceTarget> = {
   "tms-track-start": "START",
   "tms-track-dest": "DESTINATION",
 };
+
+/**
+ * The app's off-route rule (docs/geo-location-tracking-mobile-api.md): this far
+ * from the route line, this many fixes in a row, then ask the server to reroute.
+ */
+const OFF_ROUTE_METERS = 250;
+const OFF_ROUTE_FIXES = 2;
+
+/** The route as the phone holds it: its version and its line. */
+type HeldRoute = { version: number; path: [number, number][] };
+
+function heldRoute(route: RouteView | null | undefined): HeldRoute | null {
+  return route ? { version: route.version, path: decodePolyline(route.polyline) } : null;
+}
 
 async function fetchPlannedTrips(): Promise<SessionView[]> {
   const response = await fetch("/api/tracking/sessions?status=PLANNED", { cache: "no-store" });
@@ -132,6 +161,10 @@ export function Simulator() {
     null,
   );
   const [log, setLog] = useState<LogEntry[]>([]);
+  // Rerouting, as the app does it: the route it draws, and how far off it the walk is.
+  const [offRoute, setOffRoute] = useState(false);
+  const [route, setRoute] = useState<HeldRoute | null>(null);
+  const [offBy, setOffBy] = useState<number | null>(null);
 
   // The tick runs from a timer, so it reads the latest values through refs.
   const radar = useRef<typeof RadarType | null>(null);
@@ -139,15 +172,35 @@ export function Simulator() {
   const destinationRef = useRef<Point | null>(null);
   const onlineRef = useRef(online);
   const tripRef = useRef(tripId);
+  const offRouteRef = useRef(offRoute);
+  const routeRef = useRef<HeldRoute | null>(null);
+  const offFixes = useRef(0);
 
   useEffect(() => {
     onlineRef.current = online;
     tripRef.current = tripId;
-  }, [online, tripId]);
+    offRouteRef.current = offRoute;
+  }, [online, tripId, offRoute]);
 
   const addLog = useCallback((text: string, tone: LogEntry["tone"] = "info") => {
     setLog((entries) => [{ at: new Date(), text, tone }, ...entries].slice(0, 150));
   }, []);
+
+  const holdRoute = useCallback((next: HeldRoute | null) => {
+    routeRef.current = next;
+    setRoute(next);
+  }, []);
+
+  /** Fetches the route to follow, as the app does after Start and when its version is behind. */
+  const loadRoute = useCallback(
+    async (sessionId: string) => {
+      const response = await fetch(`/api/tracking/sessions/${sessionId}/route`, { cache: "no-store" });
+      const json = (await response.json().catch(() => ({}))) as { route?: RouteView | null };
+      holdRoute(heldRoute(json.route));
+      if (json.route) addLog(`Drawing route v${json.route.version} (${json.route.source.toLowerCase()})`);
+    },
+    [addLog, holdRoute],
+  );
 
   /** The trips a phone could start, as the app's trip list shows them. */
   const loadPlannedTrips = useCallback(
@@ -216,7 +269,7 @@ export function Simulator() {
     const trip = tripRef.current;
     if (!trip || !walk.current || !destinationRef.current) return;
 
-    const next = nextPosition(walk.current, destinationRef.current);
+    const next = nextPosition(walk.current, destinationRef.current, offRouteRef.current);
     walk.current = next;
     setPosition(next);
 
@@ -239,11 +292,45 @@ export function Simulator() {
       const result = await post(`/api/tracking/sessions/${trip}/locations`, location);
       if (!result.ok) throw new Error(String(result.json.error ?? `HTTP ${result.status}`));
       addLog(`Sent ${next.latitude}, ${next.longitude}`);
+
+      // Behind on the route (someone else rerouted)? Fetch the current one.
+      const version = Number(result.json.routeVersion);
+      if (routeRef.current && version > routeRef.current.version) await loadRoute(trip);
     } catch (error) {
       setQueue((current) => [...current, location]);
       addLog(`Route point send failed (${(error as Error).message}) — queued`, "error");
     }
-  }, [addLog, trackWithRadar]);
+
+    // The app's off-route check: this fix against the route it draws.
+    const held = routeRef.current;
+    if (!held) return;
+
+    const meters = distanceToPathMeters(next, held.path);
+    setOffBy(Math.round(meters));
+    offFixes.current = meters > OFF_ROUTE_METERS ? offFixes.current + 1 : 0;
+    if (offFixes.current < OFF_ROUTE_FIXES) return;
+
+    offFixes.current = 0;
+    addLog(`Off the route by ${Math.round(meters)} m — asking the server to reroute`);
+    const reroute = await post(`/api/tracking/sessions/${trip}/reroute`, {
+      latitude: next.latitude,
+      longitude: next.longitude,
+      routeVersion: held.version,
+    });
+    if (!reroute.ok) {
+      addLog(`Reroute failed: ${String(reroute.json.error ?? `HTTP ${reroute.status}`)}`, "error");
+      return;
+    }
+
+    const rerouted = reroute.json.route as RouteView | null;
+    holdRoute(heldRoute(rerouted));
+    addLog(
+      reroute.json.rerouted
+        ? `Rerouted — now following route v${rerouted?.version}`
+        : `No new route yet (cool-down or already rerouted) — following v${rerouted?.version}`,
+      "ok",
+    );
+  }, [addLog, trackWithRadar, loadRoute, holdRoute]);
 
   useEffect(() => {
     if (!running) return;
@@ -304,8 +391,14 @@ export function Simulator() {
       setPosition(null);
       setRadarTrip(result.json.tripStatus ? { status: String(result.json.tripStatus).toLowerCase() } : null);
       setRunning(true);
+      setOffRoute(false);
+      offRouteRef.current = false;
+      offFixes.current = 0;
+      setOffBy(null);
       addLog(`Started trip ${newTripId} — Radar trip status ${String(result.json.tripStatus)}`, "ok");
 
+      // The app draws the route to follow right after Start.
+      await loadRoute(newTripId);
       await tick();
     } catch (error) {
       addLog(`Start failed: ${(error as Error).message}`, "error");
@@ -482,7 +575,21 @@ export function Simulator() {
               <SendIcon />
               Step now
             </Button>
+
+            <Button
+              onClick={() => setOffRoute((current) => !current)}
+              disabled={!active}
+              variant={offRoute ? "destructive" : "outline"}
+            >
+              <RouteIcon />
+              {offRoute ? "Back toward destination" : "Go off route"}
+            </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Off route, the walk turns away from the destination. After {OFF_ROUTE_FIXES} fixes more
+            than {OFF_ROUTE_METERS} m from the route it draws, the simulator asks the server to
+            reroute — as the app will.
+          </p>
         </CardContent>
       </Card>
 
@@ -521,6 +628,12 @@ export function Simulator() {
               {radarTrip?.minutes !== undefined
                 ? `${formatMinutes(radarTrip.minutes)} · ${formatDistance(radarTrip.meters === undefined ? null : Math.round(radarTrip.meters))}`
                 : "—"}
+            </Stat>
+            <Stat label="Route drawn">{route ? `v${route.version}` : "—"}</Stat>
+            <Stat label="Distance from route">
+              <span className={offBy !== null && offBy > OFF_ROUTE_METERS ? "font-medium text-amber-600" : ""}>
+                {offBy === null ? "—" : `${offBy} m`}
+              </span>
             </Stat>
             <Stat label="Current position">
               {position ? (

@@ -2,6 +2,8 @@
 
 For developers building the mobile app against the **geolocation tracking POC** (`/tracking`). It works exactly like the Radar POC ([radar-tracking-mobile-api.md](./radar-tracking-mobile-api.md)) — same flow, same request and response shapes — with one difference: **the planned route, distance and ETA come from the Google Routes API** (drive, with traffic) instead of Radar's route API. The paths are `/api/tracking/sessions/…` and a trip is called a *session*; the two POCs share no data.
 
+On top of that, this POC adds **rerouting**: the app draws the route to follow (`GET /route`), checks each GPS fix against it, and when the driver leaves it asks the server for a new one (`POST /reroute`); the server routes again with Google and the dashboard shows the new route. The dashboard can also show the driven line snapped to roads (Google Roads API, on when `GOOGLE_ROADS_ENABLED=true`) — nothing for the app to do there either way.
+
 Design background: [geo-location-tracking-poc-implementation.md](./geo-location-tracking-poc-implementation.md) and [radar-tracking-poc.md](./radar-tracking-poc.md). Short step-by-step version of the app flow: [geo-location-tracking-mobile-flow.md](./geo-location-tracking-mobile-flow.md).
 
 ---
@@ -87,6 +89,8 @@ Native SDK docs: iOS `RadarSDK`, Android `io.radar:sdk`, React Native `react-nat
 | POST | `/api/tracking/sessions/{sessionId}/locations` | Forward one SDK location |
 | POST | `/api/tracking/sessions/{sessionId}/locations/bulk` | Upload queued locations |
 | POST | `/api/tracking/sessions/{sessionId}/stop` | Stop the trip |
+| GET | `/api/tracking/sessions/{sessionId}/route` | The route to follow now (to draw) |
+| POST | `/api/tracking/sessions/{sessionId}/reroute` | The phone left the route — get a new one |
 
 > **Changed from the earlier /tracking POC:**
 > - `POST /sessions` used to create **and start** a session from `deviceId`, `start`, `destination`, `distanceMeters` and `eta`. It now only creates a **planned** session from `start` and `destination` (the server gets the route from Google; the other fields are ignored). Starting is `POST /sessions/{sessionId}/start`, which now also creates a Radar trip.
@@ -125,7 +129,11 @@ Native SDK docs: iOS `RadarSDK`, Android `io.radar:sdk`, React Native `react-nat
   "arrivedAt": null,
   "radarSyncError": null,
   "locationCount": 0,
-  "eventCount": 0
+  "eventCount": 0,
+  "routeVersion": 1,
+  "reroutedAt": null,
+  "rerouted": null,
+  "drivenRouteError": null
 }
 ```
 
@@ -136,6 +144,9 @@ Native SDK docs: iOS `RadarSDK`, Android `io.radar:sdk`, React Native `react-nat
 | `start.address`, `destination.address` | The address picked when the trip was planned (on the portal from Google Places, or sent by the app on `POST /sessions`). `null` when the point was entered as latitude/longitude — show the coordinates instead. |
 | `planned` | Google's drive route (with traffic) from when the session was planned: distance in meters, travel time in minutes. For display only; the live ETA after Start is `eta`, which is Radar's **car** ETA. Can be `null` for sessions from before planning. |
 | `tripStatus`, `eta`, `departedAt`, `arrivedAt` | Filled in by Radar after Start (by webhook). `eta.minutes` is the remaining travel time. |
+| `routeVersion` | The route to follow now: 1 = planned, each reroute adds one. Fetch [`/route`](#48-get-the-route-to-follow) when it is higher than yours. |
+| `reroutedAt`, `rerouted` | When the driver was last rerouted, and that route's `distanceMeters` / `durationMinutes`. `null` until the first reroute. |
+| `drivenRouteError` | Dashboard only: the last failure snapping the driven line to roads. Ignore on the phone. |
 
 ### 4.1 List trips
 
@@ -193,7 +204,7 @@ For a driver who plans the trip on the phone rather than picking one from the po
 |---|---|
 | 400 | Invalid body; the `error` names the field, e.g. `destination.radiusMeters must be a whole number between 50 and 10000.` |
 | 502 | Google could not route between the two points (or the call failed). Nothing was saved. Check the points; retrying is safe. |
-| 503 | Radar keys (Start) or the Google routing key (Create) are not configured on the server. |
+| 503 | The Google routing key is not configured on the server. |
 
 Not idempotent: each successful call creates a new trip. If the response is lost, look for the trip in `GET /sessions?status=PLANNED` before sending again.
 
@@ -247,9 +258,9 @@ Optionally, to get the SDK's trip-aware behaviour, call `Radar.startTrip` with t
 |---|---|
 | 400 | `deviceId` missing or invalid. |
 | 404 | No such trip. Refresh the list. |
-| 409 | The trip was already started (by this or another phone) or is completed. The body has `success: false`, `status`, `deviceId` and `startedAt`. If `deviceId` is yours, a previous Start succeeded and its response was lost: carry on tracking. Otherwise refresh the list. |
+| 409 | The trip was already started (by this or another phone) or is completed. The body has `success: false`, `error`, `sessionId`, `status`, `deviceId` and `startedAt`. If `deviceId` is yours, a previous Start succeeded and its response was lost: carry on tracking. Otherwise refresh the list. |
 | 502 | A Radar call failed. The trip is back to `PLANNED` and nothing was left in Radar. Safe to retry. |
-| 503 | Radar keys (Start) or the Google routing key (Create) are not configured on the server. |
+| 503 | The Radar keys are not configured on the server. |
 
 ### 4.5 Forward one location
 
@@ -267,7 +278,7 @@ Call from the SDK's location listener (iOS `didUpdateLocation`, Android `RadarRe
 | `accuracy` | number or `null` | no | Meters, from the SDK location; 0–100,000 when present. |
 | `capturedAt` | string | yes | The fix time from the SDK location, not the send time. |
 
-**Response — `200 OK`:** `{ "success": true, "duplicate": false }`. `duplicate: true` means it was already stored; treat it as success.
+**Response — `200 OK`:** `{ "success": true, "duplicate": false, "routeVersion": 1 }`. `duplicate: true` means it was already stored; treat it as success. `routeVersion` is the route to follow now — if it is higher than the version you are drawing, fetch [`/route`](#48-get-the-route-to-follow).
 
 | Status | When |
 |---|---|
@@ -283,7 +294,7 @@ A **stopped trip still accepts locations**, so points queued while offline can b
 POST /api/tracking/sessions/{sessionId}/locations/bulk
 ```
 
-`{ "locations": [ … ] }`, 1–1,000 items of the shape above. Idempotent on `id`. Response: `{ "success": true, "inserted": 2, "skipped": 0 }` (`skipped` counts ids already stored).
+`{ "locations": [ … ] }`, 1–1,000 items of the shape above. Idempotent on `id`. Response: `{ "success": true, "inserted": 2, "skipped": 0, "routeVersion": 1 }` (`skipped` counts ids already stored; `routeVersion` as for a single location).
 
 | Status | When |
 |---|---|
@@ -323,6 +334,69 @@ A Radar failure does not fail the stop; it is reported in `radarSyncError`.
 
 ---
 
+### 4.8 Get the route to follow
+
+```http
+GET /api/tracking/sessions/{sessionId}/route
+```
+
+The route the driver should follow now, to draw on the phone's map. Version 1 is the route planned on the portal (Google); after a reroute it is the new route.
+
+```json
+{
+  "route": {
+    "version": 1,
+    "source": "PLANNED",
+    "distanceMeters": 142508,
+    "durationMinutes": 165.3,
+    "polyline": "u~`aCcz~{L…",
+    "updatedAt": "2026-10-23T08:30:00.000Z"
+  }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `version` | 1 = planned; each reroute adds one. Keep it with the route you draw. |
+| `source` | `PLANNED` or `REROUTE`. |
+| `polyline` | Google encoded polyline (precision 5). Android: `PolyUtil.decode(polyline)`; iOS: `GMSPath(fromEncodedPath:)`. Draw it as the route line. |
+| `distanceMeters`, `durationMinutes` | Google's drive figures for this route, from where it starts (the source, or where the driver was rerouted). |
+
+`route` is `null` only if the session has no planned route. `404` if there is no such session.
+
+Call it **after Start**, and **whenever a locations response's `routeVersion` is higher** than the version you are drawing (for example, a reroute response was lost).
+
+### 4.9 Reroute (the phone left the route)
+
+```http
+POST /api/tracking/sessions/{sessionId}/reroute
+```
+
+The **phone** decides when the driver is off the route, by checking each GPS fix against the route it draws (see [5. Recommended device logic](#5-recommended-device-logic)). The **server** then asks the Google Routes API for a route from the driver's position to the destination and makes it the route to follow; the dashboard shows it on its next refresh. Only the latest reroute is kept.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `latitude`, `longitude` | number | yes | Where the driver is now. |
+| `routeVersion` | integer | no | 1 or more: the version you were following. Send it — a request for an out-of-date version is not rerouted again. |
+
+```json
+{ "latitude": 21.1905, "longitude": 72.8602, "routeVersion": 1 }
+```
+
+**Response — `200 OK`:** `{ "success": true, "rerouted": true, "route": { …same shape as 4.8, version 2, source "REROUTE"… } }`. Draw the `route`.
+
+`rerouted: false` means no new route was made — your version was already out of date, or the last reroute was under a minute ago — and `route` is the current one. Draw it anyway.
+
+| Status | When |
+|---|---|
+| 400 | Invalid body. |
+| 404 | No such session. |
+| 409 | The session is not active (not started yet, or stopped). |
+| 502 | Google could not route from that point. Nothing changed; keep the route you have and try again on a later fix. |
+| 503 | Google routing is not configured on the server. |
+
+---
+
 ## 5. Recommended device logic
 
 ```text
@@ -342,6 +416,7 @@ trip detail screen:
 on Start tap:
     POST /sessions/{sessionId}/start { deviceId }
         200 → save sessionId to persistent storage; Radar.startTracking(trip preset)
+              route = GET /sessions/{sessionId}/route   // draw route.polyline, keep route.version
         409 with your deviceId → same as 200 (an earlier Start succeeded)
         409 otherwise / 404 → "trip no longer available", refresh the list
         502 → nothing changed, let the driver retry
@@ -353,6 +428,15 @@ on each Radar SDK location (listener):
                on 200 remove those ids; on 5xx/network keep and retry with backoff
                on 400 move the batch aside; on 404 clear the queue for this trip
                on 409 the trip was never started — call POST /start before sending points
+               if response.routeVersion > route.version: route = GET /route, redraw
+
+    off-route check (every fix, online or not — it is local and free):
+    d = distance from the fix to route.polyline (nearest point on the line)
+    if d > 250 m for 2 fixes in a row (ignore fixes with accuracy worse than 100 m):
+        if online: r = POST /reroute { latitude, longitude, routeVersion: route.version }
+                   on 200: route = r.route, redraw   // rerouted or not, draw what comes back
+                   on 502 / network: keep the route, try again on a later fix
+        offline:   keep the route; check again when back online
 
 on Stop tap (or when you decide the trip is over):
     Radar.stopTracking()

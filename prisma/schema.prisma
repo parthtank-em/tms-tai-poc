@@ -793,6 +793,25 @@ model TrackingSession {
   plannedDurationMinutes Float? @map("planned_duration_minutes")
   plannedRoute           Json?  @map("planned_route")
 
+  /// Which route the driver should follow: 1 is the planned route above, and
+  /// each reroute adds one. The phone compares it with the version it shows
+  /// and fetches the route again when it is behind.
+  routeVersion Int @default(1) @map("route_version")
+
+  /// The latest reroute (Google, from where the driver left the route to the
+  /// destination), or null until the first one. A new reroute replaces it.
+  currentRoute                Json?     @map("current_route")
+  currentRouteDistanceMeters  Int?      @map("current_route_distance_meters")
+  currentRouteDurationMinutes Float?    @map("current_route_duration_minutes")
+  reroutedAt                  DateTime? @map("rerouted_at")
+
+  /// The driven points snapped to roads (Google Roads API), for the dashboard.
+  /// `drivenRouteLocationCount` is how many points it was made from.
+  drivenRoute              Json?     @map("driven_route")
+  drivenRouteLocationCount Int       @default(0) @map("driven_route_location_count")
+  drivenRouteUpdatedAt     DateTime? @map("driven_route_updated_at")
+  drivenRouteError         String?   @map("driven_route_error")
+
   /// Radar's own id for the trip created at Start, from the create response.
   radarTripId       String?          @map("radar_trip_id")
   tripStatus        RadarTripStatus? @map("trip_status")

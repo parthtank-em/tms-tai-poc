@@ -67,7 +67,10 @@ GET /api/tracking/sessions/{sessionId}
   "routeVersion": 1,
   "reroutedAt": null,
   "rerouted": null,
-  "drivenRouteError": null
+  "drivenRouteError": null,
+  "weatherVersion": 0,
+  "weatherCheckedAt": null,
+  "weatherError": null
 }
 ```
 
@@ -85,6 +88,8 @@ GET /api/tracking/sessions/{sessionId}
 | `routeVersion` | The route to follow: `1` = planned, each reroute adds one (see Step 3b). |
 | `reroutedAt` / `rerouted` | Time and `{ distanceMeters, durationMinutes }` of the last reroute; `null` if never rerouted. |
 | `drivenRouteError` | For the dashboard only — the phone can ignore it. |
+| `weatherVersion` | Goes up when there are new weather alerts on the road ahead: `0` = none yet (see Step 4c). |
+| `weatherCheckedAt` / `weatherError` | When the server last checked the weather ahead, and its last error. For display only. |
 
 All times are ISO 8601 UTC strings.
 
@@ -171,7 +176,7 @@ POST /api/tracking/sessions/{sessionId}/locations
 }
 ```
 
-- `200` → saved (`duplicate: true` also means success). The response has `routeVersion`: if it is higher than the version you draw, fetch Step 3b again and redraw.
+- `200` → saved (`duplicate: true` also means success). The response has `routeVersion`: if it is higher than the version you draw, fetch Step 3b again and redraw. It also has `weatherVersion`: if it is higher than yours, do Step 4c.
 - Offline → keep points in a queue on the phone.
 - These points only draw the route line on the portal. Radar gets locations directly from its SDK.
 
@@ -191,6 +196,44 @@ POST /api/tracking/sessions/{sessionId}/reroute
 - `502` → keep the route you have; try again on a later fix.
 - The dashboard shows the new route by itself.
 
+## Step 4c — New weather alerts: fetch them and notify the driver
+
+The server checks Google's weather forecast along the road ahead (at Start, after a reroute, and every 30 minutes). When it finds a hazard (thunderstorm, heavy rain, snow/ice, strong wind, low visibility, extreme heat), it raises an alert and `weatherVersion` goes up. The route itself never changes because of weather.
+
+When a locations response's `weatherVersion` is higher than the one you have:
+
+```http
+GET /api/tracking/sessions/{sessionId}/weather
+```
+
+```json
+{
+  "weather": {
+    "version": 2,
+    "routeVersion": 1,
+    "checkedAt": "2026-10-26T09:30:04.112Z",
+    "checkpoints": [ … ],
+    "alerts": [
+      {
+        "id": "0b6c2f0e-7d1f-4f6a-9a51-3c1e2b9d8a10",
+        "kind": "HEAVY_RAIN",
+        "severity": "WARNING",
+        "message": "Heavy rain (up to 12 mm/h) expected 42 km ahead around 15:30, for about 30 km",
+        "expectedAt": "2026-10-26T10:00:00.000Z",
+        …
+      }
+    ]
+  }
+}
+```
+
+- Save `weather.version` as your version.
+- For each alert whose `id` you have **not shown before**: show a **local notification** with `message` (make it louder when `severity` is `SEVERE`), then remember the `id`. The same ids come back on later fetches, so don't notify them again.
+- Replace your alert list with this one each time. After a reroute it is the new route's list, and may be empty. A hazard that got worse (`WARNING` → `SEVERE`) comes as a new `id`, so it is notified.
+- Keep the version and the shown ids with the saved `sessionId`, so a restarted app doesn't notify again.
+- Optional: show `checkpoints` (the forecast at points ahead, with Google's weather icon) on the trip screen.
+- No push notifications are involved. The phone hears of new alerts only through locations responses, so only while it is sending locations.
+
 ## Step 5 — Back online, send the queued points
 
 ```http
@@ -203,6 +246,7 @@ POST /api/tracking/sessions/{sessionId}/locations/bulk
 
 - Up to 1,000 points per request.
 - `200` → remove those points from the queue. Sending the same batch again is safe.
+- The response has `routeVersion` and `weatherVersion` too; handle them as in Step 4.
 
 ## Step 6 — Driver taps Stop
 
@@ -225,6 +269,7 @@ POST /api/tracking/sessions/{sessionId}/stop
 
 - It does not report entering or exiting a geofence — Radar tells our server by webhook.
 - It does not calculate ETA or distance — Radar does, and the portal shows it.
+- It does not call any weather service. The server checks the weather and the phone only shows the alerts (Step 4c).
 
 ## Summary
 
@@ -237,6 +282,7 @@ POST /api/tracking/sessions/{sessionId}/stop
 | 3b | After Start, and when `routeVersion` goes up | `GET /sessions/{id}/route` |
 | 4 | Each location | `POST /sessions/{id}/locations` |
 | 4b | Off the route (250 m, 2 fixes in a row) | `POST /sessions/{id}/reroute` |
+| 4c | A locations response's `weatherVersion` goes up | `GET /sessions/{id}/weather` → local notification per new alert |
 | 5 | Back online | `POST /sessions/{id}/locations/bulk` |
 | 6 | Stop tapped | `POST /sessions/{id}/stop` |
 

@@ -151,7 +151,7 @@ Native SDK docs: iOS `RadarSDK`, Android `io.radar:sdk`, React Native `react-nat
 | `routeVersion` | The route to follow now: 1 = planned, each reroute adds one. Fetch [`/route`](#48-get-the-route-to-follow) when it is higher than yours. |
 | `reroutedAt`, `rerouted` | When the driver was last rerouted, and that route's `distanceMeters` / `durationMinutes`. `null` until the first reroute. |
 | `drivenRouteError` | Dashboard only: the last failure snapping the driven line to roads. Ignore on the phone. |
-| `weatherVersion` | Goes up when there are new weather alerts on the route ahead (0 = none yet). Fetch [`/weather`](#410-get-the-weather-ahead) when it is higher than yours. |
+| `weatherVersion` | Goes up when there are new weather alerts on the route ahead, and after a reroute once the new route has been checked (0 = none yet). Fetch [`/weather`](#410-get-the-weather-ahead) when it is higher than yours. |
 | `weatherCheckedAt`, `weatherError` | When the road ahead was last checked for weather, and the last failure doing so. For display only. |
 
 ### 4.1 List trips
@@ -407,7 +407,9 @@ The **phone** decides when the driver is off the route, by checking each GPS fix
 GET /api/tracking/sessions/{sessionId}/weather
 ```
 
-The server checks Google's hourly forecast at points along the route ahead of the driver: at Start, after each reroute, and every 30 minutes while the trip is active. It raises an **alert** for each hazard it finds: thunderstorm, heavy rain, snow/ice, strong wind, low visibility or extreme heat. The route itself never changes because of weather. Alerts are only warnings.
+The server checks Google's hourly forecast at points along the route ahead of the driver: at Start, after each reroute, and every 30 minutes while the trip is active. It raises an **alert** for each stretch of road with a hazard: thunderstorm, heavy rain, snow/ice, strong wind, low visibility or extreme heat. A band of rain along the route is one alert, placed where it starts, with the worst severity along it.
+
+A hazard is raised **once**. Later checks see the same storm again from further along, and don't raise it again. If it gets **worse** (`WARNING` → `SEVERE`), it is raised again as a new alert. The route itself never changes because of weather. Alerts are only warnings.
 
 The phone finds out there is something new from `weatherVersion` in the [locations](#45-forward-one-location) response, and shows them as **local notifications**. No push service is involved.
 
@@ -435,7 +437,7 @@ The phone finds out there is something new from `weatherVersion` in the [locatio
         "id": "0b6c2f0e-7d1f-4f6a-9a51-3c1e2b9d8a10",
         "kind": "HEAVY_RAIN",
         "severity": "WARNING",
-        "message": "Heavy rain (9 mm/h) expected 42 km ahead around 15:30",
+        "message": "Heavy rain (up to 12 mm/h) expected 42 km ahead around 15:30, for about 30 km",
         "condition": "Heavy rain",
         "latitude": 21.5402,
         "longitude": 72.9631,
@@ -452,8 +454,8 @@ The phone finds out there is something new from `weatherVersion` in the [locatio
 | Field | Notes |
 |---|---|
 | `version` | Keep it. Fetch again when a locations response's `weatherVersion` is higher. |
-| `alerts` | Alerts on the route to follow now whose `expectedAt` is less than an hour past, soonest first. **Notify each `id` once:** remember the ids you have shown, and don't show them again when they come back on a later fetch. After a reroute the list is the new route's. |
-| `alerts[].message` | Ready to show as the notification text. The time is local to that place. `distanceAheadMeters` is measured from where the driver was when the server checked, so it gets out of date as the driver moves. Prefer `expectedAt` for anything you work out yourself. |
+| `alerts` | Alerts on the route to follow now whose `expectedAt` is less than an hour past, soonest first. **Notify each `id` once:** remember the ids you have shown, and don't show them again when they come back on a later fetch. **Replace** your list with this one on every fetch. After a reroute it is the new route's list, and may be empty. A hazard that got worse comes as a **new** `id` (notify it) next to the earlier warning. If you show a list, you may hide a `WARNING` that has a `SEVERE` of the same `kind` close to it. |
+| `alerts[].message` | Ready to show as the notification text. It names where the hazard starts, the time there (local to that place), the worst figure along it ("up to 12 mm/h"; "down to 300 m" for visibility) and, for a stretch, its length ("for about 30 km"). `distanceAheadMeters` is measured from where the driver was when the server checked, so it gets out of date as the driver moves. Prefer `expectedAt` for anything you work out yourself. |
 | `alerts[].kind`, `severity` | `kind`: `THUNDERSTORM`, `HEAVY_RAIN`, `SNOW_ICE`, `STRONG_WIND`, `LOW_VISIBILITY`, `EXTREME_HEAT`. `severity`: `WARNING` or `SEVERE`. For example, use a louder notification for `SEVERE`. |
 | `checkpoints` | Optional to use: the forecast at up to 12 points ahead, nearest first, for a weather strip on the trip screen. Empty before the first check. `iconBaseUri` + `.svg` or `.png` is Google's icon. |
 

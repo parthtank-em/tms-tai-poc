@@ -6,7 +6,7 @@
 
 ## 0. What changed since this plan
 
-The POC now works **exactly like the Radar POC** ([radar-tracking-poc.md](./radar-tracking-poc.md), [mobile flow](./geo-location-tracking-mobile-flow.md)), with one difference: **the planned route, distance and ETA come from the Google Routes API** (drive, traffic-aware) instead of Radar's route API. The web maps are Google Maps; address search is Google Places. On top of that, this POC adds **rerouting** and a **driven line snapped to roads** (last two rows of the table).
+The POC now works **exactly like the Radar POC** ([radar-tracking-poc.md](./radar-tracking-poc.md), [mobile flow](./geo-location-tracking-mobile-flow.md)), with one difference: **the planned route, distance and ETA come from the Google Routes API** (drive, traffic-aware) instead of Radar's route API. The web maps are Google Maps; address search is Google Places. On top of that, this POC adds **rerouting**, a **driven line snapped to roads** and **weather alerts along the route** (last three rows of the table).
 
 | This plan says | The code does now |
 |---|---|
@@ -18,6 +18,20 @@ The POC now works **exactly like the Radar POC** ([radar-tracking-poc.md](./rada
 | Stop only sets `COMPLETED` and `endedAt` (§5.4) | Also completes the Radar trip and deletes both fences. A Radar failure is kept in `radarSyncError` and does not fail the stop. |
 | No rerouting | The phone draws the route to follow (`GET /sessions/{id}/route`: version, distance, time, Google encoded polyline) and checks each GPS fix against it. When it is more than 250 m off for 2 fixes in a row, it calls `POST /sessions/{id}/reroute { latitude, longitude, routeVersion }`; the server gets a new Google route from that point to the destination and stores it as the route to follow (`route_version` + 1, `current_route*`, `rerouted_at`). Only the latest reroute is kept. No new route is made for an out-of-date version or within 60 s of the last reroute. Location responses carry `routeVersion`, so a phone knows when to fetch `/route` again. The dashboard draws the planned route and the current reroute. |
 | The map draws the raw GPS points | When `GOOGLE_ROADS_ENABLED="true"`, the server snaps the driven points to roads with the Google Roads API after locations arrive and at Stop (`driven_route*`), and the dashboard draws that line; a failure is kept in `drivenRouteError`. Off by default — then the dashboard draws the raw points. Nothing changes for the phone. |
+| No weather (§17: push notifications out of scope) | When `GOOGLE_WEATHER_ENABLED="true"`, the server checks the **Google Weather API** hourly forecast along the road ahead (same server key; the Weather API must be enabled on it). See the weather notes below the table. |
+
+**Weather alerts:**
+
+- **When the weather is checked:** in the planner's Preview (nothing saved), at Start, after each reroute, and every 30 minutes while the session is ACTIVE. The 30-minute checks are triggered by location uploads (single and bulk) and run after the response is sent. Two uploads at once only check once.
+- **Points checked:** up to 12 points from the driver's latest position to the end of the route they are following: one about every 25 km, plus the end. Each point gets the forecast for the hour the driver should reach it, assuming an even pace over the route's traffic-aware travel time. That is one billed Weather API call per point.
+- **What counts as a hazard:** the thresholds are ours, in `THRESHOLDS` in `src/lib/tracking/weather.ts`. They cover thunderstorm, heavy rain (≥ 7.6 mm/h), snow/ice, strong wind (gusts ≥ 60 km/h), low visibility (< 1 km) and extreme heat (≥ 42 °C), each a `WARNING` or `SEVERE`.
+- **Alerts:** one alert per *stretch* of road with the same hazard, placed where it starts, at the worst severity along it. For example: "Heavy rain (up to 12 mm/h) expected 42 km ahead around 15:30, for about 30 km". Alerts are stored in `tracking_weather_alerts`, and the last check's points are stored in `tracking_sessions.route_weather`.
+- **Repeat alerts:** a later check doesn't raise the same hazard again if one of the same kind was already raised on that route within an hour and about 30 km of it (`isRepeat`). If it gets worse (`WARNING` → `SEVERE`), it is raised again. The unique key (session, route version, kind, severity, forecast hour) is the backstop. A reroute starts afresh.
+- **Getting alerts to the phone:** the session's `weather_version` goes up when there are new alerts, or when the first check of a new route is saved. Locations responses carry `weatherVersion`, and when it goes up the phone calls `GET /sessions/{id}/weather` and shows a local notification for each alert id it hasn't shown before. This is the same pattern as `routeVersion`. There is no push service.
+- **Dashboard:** the session page shows the weather ahead in its side panel, pins hazards on the map, and has a Weather tab with the forecast strip and every alert. The `/tracking/simulator` acts as the phone and logs each alert as a "Notification".
+- **Errors:** a failure is kept in `weatherError` and the last good check stays. Weather never changes the route.
+- **Schema:** migrations `20261026090000_tracking_weather` (the session columns and the alerts table) and `20261026120000_tracking_weather_alert_severity_key` (severity added to the unique key).
+- **Tests:** unit tests in `weather.test.ts`, and an integration suite against Postgres in `weather.integration.test.ts`, with Google stubbed.
 
 The rest of this document is the plan as originally written.
 

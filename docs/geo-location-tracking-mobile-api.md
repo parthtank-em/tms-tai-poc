@@ -91,6 +91,7 @@ Native SDK docs: iOS `RadarSDK`, Android `io.radar:sdk`, React Native `react-nat
 | POST | `/api/tracking/sessions/{sessionId}/stop` | Stop the trip |
 | GET | `/api/tracking/sessions/{sessionId}/route` | The route to follow now (to draw) |
 | POST | `/api/tracking/sessions/{sessionId}/reroute` | The phone left the route — get a new one |
+| GET | `/api/tracking/sessions/{sessionId}/weather` | Weather alerts on the route ahead (to notify the driver) |
 
 > **Changed from the earlier /tracking POC:**
 > - `POST /sessions` used to create **and start** a session from `deviceId`, `start`, `destination`, `distanceMeters` and `eta`. It now only creates a **planned** session from `start` and `destination` (the server gets the route from Google; the other fields are ignored). Starting is `POST /sessions/{sessionId}/start`, which now also creates a Radar trip.
@@ -133,7 +134,10 @@ Native SDK docs: iOS `RadarSDK`, Android `io.radar:sdk`, React Native `react-nat
   "routeVersion": 1,
   "reroutedAt": null,
   "rerouted": null,
-  "drivenRouteError": null
+  "drivenRouteError": null,
+  "weatherVersion": 0,
+  "weatherCheckedAt": null,
+  "weatherError": null
 }
 ```
 
@@ -147,6 +151,8 @@ Native SDK docs: iOS `RadarSDK`, Android `io.radar:sdk`, React Native `react-nat
 | `routeVersion` | The route to follow now: 1 = planned, each reroute adds one. Fetch [`/route`](#48-get-the-route-to-follow) when it is higher than yours. |
 | `reroutedAt`, `rerouted` | When the driver was last rerouted, and that route's `distanceMeters` / `durationMinutes`. `null` until the first reroute. |
 | `drivenRouteError` | Dashboard only: the last failure snapping the driven line to roads. Ignore on the phone. |
+| `weatherVersion` | Goes up when there are new weather alerts on the route ahead (0 = none yet). Fetch [`/weather`](#410-get-the-weather-ahead) when it is higher than yours. |
+| `weatherCheckedAt`, `weatherError` | When the road ahead was last checked for weather, and the last failure doing so. For display only. |
 
 ### 4.1 List trips
 
@@ -278,7 +284,7 @@ Call from the SDK's location listener (iOS `didUpdateLocation`, Android `RadarRe
 | `accuracy` | number or `null` | no | Meters, from the SDK location; 0–100,000 when present. |
 | `capturedAt` | string | yes | The fix time from the SDK location, not the send time. |
 
-**Response — `200 OK`:** `{ "success": true, "duplicate": false, "routeVersion": 1 }`. `duplicate: true` means it was already stored; treat it as success. `routeVersion` is the route to follow now — if it is higher than the version you are drawing, fetch [`/route`](#48-get-the-route-to-follow).
+**Response — `200 OK`:** `{ "success": true, "duplicate": false, "routeVersion": 1, "weatherVersion": 0 }`. `duplicate: true` means it was already stored; treat it as success. `routeVersion` is the route to follow now — if it is higher than the version you are drawing, fetch [`/route`](#48-get-the-route-to-follow). `weatherVersion` works the same way for weather alerts — if it is higher than yours, fetch [`/weather`](#410-get-the-weather-ahead).
 
 | Status | When |
 |---|---|
@@ -294,7 +300,7 @@ A **stopped trip still accepts locations**, so points queued while offline can b
 POST /api/tracking/sessions/{sessionId}/locations/bulk
 ```
 
-`{ "locations": [ … ] }`, 1–1,000 items of the shape above. Idempotent on `id`. Response: `{ "success": true, "inserted": 2, "skipped": 0, "routeVersion": 1 }` (`skipped` counts ids already stored; `routeVersion` as for a single location).
+`{ "locations": [ … ] }`, 1–1,000 items of the shape above. Idempotent on `id`. Response: `{ "success": true, "inserted": 2, "skipped": 0, "routeVersion": 1, "weatherVersion": 0 }` (`skipped` counts ids already stored; `routeVersion` and `weatherVersion` as for a single location).
 
 | Status | When |
 |---|---|
@@ -395,6 +401,64 @@ The **phone** decides when the driver is off the route, by checking each GPS fix
 | 502 | Google could not route from that point. Nothing changed; keep the route you have and try again on a later fix. |
 | 503 | Google routing is not configured on the server. |
 
+### 4.10 Get the weather ahead
+
+```http
+GET /api/tracking/sessions/{sessionId}/weather
+```
+
+The server checks Google's hourly forecast at points along the route ahead of the driver: at Start, after each reroute, and every 30 minutes while the trip is active. It raises an **alert** for each hazard it finds: thunderstorm, heavy rain, snow/ice, strong wind, low visibility or extreme heat. The route itself never changes because of weather. Alerts are only warnings.
+
+The phone finds out there is something new from `weatherVersion` in the [locations](#45-forward-one-location) response, and shows them as **local notifications**. No push service is involved.
+
+```json
+{
+  "weather": {
+    "version": 2,
+    "routeVersion": 1,
+    "checkedAt": "2026-10-26T09:30:04.112Z",
+    "checkpoints": [
+      {
+        "latitude": 21.2049,
+        "longitude": 72.8411,
+        "distanceAheadMeters": 0,
+        "expectedAt": "2026-10-26T09:30:04.000Z",
+        "condition": "Light rain",
+        "iconBaseUri": "https://maps.gstatic.com/weather/v1/showers",
+        "temperatureC": 27.4,
+        "precipitationPercent": 60,
+        "hazards": []
+      }
+    ],
+    "alerts": [
+      {
+        "id": "0b6c2f0e-7d1f-4f6a-9a51-3c1e2b9d8a10",
+        "kind": "HEAVY_RAIN",
+        "severity": "WARNING",
+        "message": "Heavy rain (9 mm/h) expected 42 km ahead around 15:30",
+        "condition": "Heavy rain",
+        "latitude": 21.5402,
+        "longitude": 72.9631,
+        "distanceAheadMeters": 42000,
+        "expectedAt": "2026-10-26T10:00:00.000Z",
+        "routeVersion": 1,
+        "createdAt": "2026-10-26T09:30:04.500Z"
+      }
+    ]
+  }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `version` | Keep it. Fetch again when a locations response's `weatherVersion` is higher. |
+| `alerts` | Alerts on the route to follow now whose `expectedAt` is less than an hour past, soonest first. **Notify each `id` once:** remember the ids you have shown, and don't show them again when they come back on a later fetch. After a reroute the list is the new route's. |
+| `alerts[].message` | Ready to show as the notification text. The time is local to that place. `distanceAheadMeters` is measured from where the driver was when the server checked, so it gets out of date as the driver moves. Prefer `expectedAt` for anything you work out yourself. |
+| `alerts[].kind`, `severity` | `kind`: `THUNDERSTORM`, `HEAVY_RAIN`, `SNOW_ICE`, `STRONG_WIND`, `LOW_VISIBILITY`, `EXTREME_HEAT`. `severity`: `WARNING` or `SEVERE`. For example, use a louder notification for `SEVERE`. |
+| `checkpoints` | Optional to use: the forecast at up to 12 points ahead, nearest first, for a weather strip on the trip screen. Empty before the first check. `iconBaseUri` + `.svg` or `.png` is Google's icon. |
+
+`404` if there is no such session. Before the first check (or when weather is turned off on the server) the response has `version: 0`, no alerts and no checkpoints.
+
 ---
 
 ## 5. Recommended device logic
@@ -417,6 +481,7 @@ on Start tap:
     POST /sessions/{sessionId}/start { deviceId }
         200 → save sessionId to persistent storage; Radar.startTracking(trip preset)
               route = GET /sessions/{sessionId}/route   // draw route.polyline, keep route.version
+              weatherVersion = 0; notifiedAlertIds = {}  // keep both in persistent storage too
         409 with your deviceId → same as 200 (an earlier Start succeeded)
         409 otherwise / 404 → "trip no longer available", refresh the list
         502 → nothing changed, let the driver retry
@@ -429,6 +494,12 @@ on each Radar SDK location (listener):
                on 400 move the batch aside; on 404 clear the queue for this trip
                on 409 the trip was never started — call POST /start before sending points
                if response.routeVersion > route.version: route = GET /route, redraw
+               if response.weatherVersion > weatherVersion:
+                   w = GET /weather; weatherVersion = w.weather.version
+                   for alert in w.weather.alerts where alert.id not in notifiedAlertIds:
+                       show local notification (alert.message; louder if alert.severity == SEVERE)
+                       add alert.id to notifiedAlertIds
+                   optionally show w.weather.checkpoints as a weather strip
 
     off-route check (every fix, online or not — it is local and free):
     d = distance from the fix to route.polyline (nearest point on the line)
@@ -453,3 +524,4 @@ Radar's own events (`entered_geofence`, `approaching_trip_destination`, `arrived
 - The live ETA is Radar's **car** ETA; Radar trips do not support a truck mode. The planned route (`planned`) is Google's, also by car.
 - The trip is not linked to a shipment or driver — only to the `deviceId` that started it.
 - One start and one destination per trip, fixed once the trip is started.
+- Weather alerts reach the phone only through locations responses, so only while it is uploading. There are no push notifications: a phone that is offline or not tracking hears of new alerts once it uploads again.

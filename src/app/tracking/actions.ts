@@ -7,10 +7,11 @@ import {
   deletePlannedSession,
   planSession,
   previewRoute,
+  previewWeather,
   replanSession,
   type PreviewRouteResult,
 } from "@/lib/tracking/service";
-import type { RoutePreview } from "@/lib/tracking/types";
+import type { RoutePreview, WeatherPreview } from "@/lib/tracking/types";
 import { parsePlanSession } from "@/lib/tracking/validation";
 
 /**
@@ -21,7 +22,10 @@ import { parsePlanSession } from "@/lib/tracking/validation";
  * erased and so permitted.
  */
 
-export type PreviewState = { ok: true; route: RoutePreview } | { ok: false; error: string };
+/** `weather` is null when the Weather API is off (GOOGLE_WEATHER_ENABLED). */
+export type PreviewState =
+  | { ok: true; route: RoutePreview; weather: WeatherPreview | null }
+  | { ok: false; error: string };
 
 export type SaveState = { ok: true; sessionId: string } | { ok: false; error: string };
 
@@ -32,7 +36,7 @@ function routeError(result: Exclude<PreviewRouteResult, { outcome: "routed" }>):
   return result.outcome === "unconfigured" ? UNCONFIGURED : result.message;
 }
 
-/** Google's route for the form's two points. Saves nothing. */
+/** Google's route for the form's two points, and the weather along it leaving now. Saves nothing. */
 export async function previewRouteAction(input: unknown): Promise<PreviewState> {
   await requireSession();
 
@@ -40,9 +44,9 @@ export async function previewRouteAction(input: unknown): Promise<PreviewState> 
   if (!parsed.ok) return { ok: false, error: parsed.error };
 
   const result = await previewRoute(parsed.value.start, parsed.value.destination);
-  return result.outcome === "routed"
-    ? { ok: true, route: result.route }
-    : { ok: false, error: routeError(result) };
+  if (result.outcome !== "routed") return { ok: false, error: routeError(result) };
+
+  return { ok: true, route: result.route, weather: await previewWeather(result.route) };
 }
 
 export async function createSessionAction(input: unknown): Promise<SaveState> {

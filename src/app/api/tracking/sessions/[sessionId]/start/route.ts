@@ -1,3 +1,5 @@
+import { after } from "next/server";
+
 import { TRIP_MODE } from "@/lib/radar/config";
 import { badRequest, readJson, sessionNotFound } from "@/lib/tracking/http";
 import {
@@ -5,7 +7,7 @@ import {
   TRACKING_DESTINATION_GEOFENCE_TAG,
   TRACKING_START_GEOFENCE_TAG,
 } from "@/lib/tracking/radar";
-import { startSession } from "@/lib/tracking/service";
+import { refreshWeather, startSession } from "@/lib/tracking/service";
 import { parseStartSession } from "@/lib/tracking/validation";
 
 /**
@@ -19,6 +21,9 @@ import { parseStartSession } from "@/lib/tracking/validation";
  * Once only: a session that is already ACTIVE or COMPLETED is a 409, whichever
  * phone started it. A Radar failure is a 502 and leaves the session PLANNED,
  * so the phone can retry.
+ *
+ * After answering, the weather along the whole route is checked for the first
+ * time — never on the phone's time.
  *
  * Unauthenticated, like the other device endpoints.
  */
@@ -60,6 +65,8 @@ export async function POST(
   }
 
   const { session } = result;
+
+  after(() => refreshWeather(session.id, { force: true }));
 
   return Response.json({
     sessionId: session.id,

@@ -4,6 +4,7 @@ import { getRadarConfig, type RadarConfig } from "@/lib/radar/config";
 
 import { isRoadsEnabled, snapToRoads } from "./google-roads";
 import { computeRoute, getGoogleRoutesKey } from "./google-routes";
+import { forecastHours, isWeatherEnabled } from "./google-weather";
 import { encodePolyline } from "./polyline";
 import {
   sessionGeofence,
@@ -20,11 +21,16 @@ import {
   type RerouteInput,
   type RoutePreview,
   type RouteView,
+  type RouteWeather,
   type SessionFeed,
   type SessionView,
   type TrackingStatus,
+  type WeatherAlertView,
+  type WeatherPreview,
+  type WeatherView,
 } from "./types";
 import type { PlanSessionInput, StartSessionInput } from "./validation";
+import { buildRouteWeather, isRepeat, sampleRoute, type AlertDraft } from "./weather";
 
 /**
  * Tracking persistence and the Radar calls that go with it. The route
@@ -72,6 +78,9 @@ const SESSION_SELECT = {
   currentRouteDistanceMeters: true,
   currentRouteDurationMinutes: true,
   drivenRouteError: true,
+  weatherVersion: true,
+  weatherCheckedAt: true,
+  weatherError: true,
   _count: { select: { locations: true, events: true } },
 } as const;
 
@@ -104,6 +113,9 @@ type SessionRow = {
   currentRouteDistanceMeters: number | null;
   currentRouteDurationMinutes: number | null;
   drivenRouteError: string | null;
+  weatherVersion: number;
+  weatherCheckedAt: Date | null;
+  weatherError: string | null;
   _count: { locations: number; events: number };
 };
 
@@ -149,6 +161,9 @@ function toSessionView(row: SessionRow): SessionView {
         ? null
         : { distanceMeters: row.currentRouteDistanceMeters, durationMinutes: row.currentRouteDurationMinutes },
     drivenRouteError: row.drivenRouteError,
+    weatherVersion: row.weatherVersion,
+    weatherCheckedAt: row.weatherCheckedAt?.toISOString() ?? null,
+    weatherError: row.weatherError,
   };
 }
 
@@ -174,6 +189,77 @@ export async function previewRoute(
   return result.ok
     ? { outcome: "routed", route: result.route }
     : { outcome: "google_failed", message: result.message };
+}
+
+type WeatherCheck = {
+  checkpoints: RouteWeather["checkpoints"];
+  alerts: AlertDraft[];
+  /** Why some or all points have no forecast, or null. */
+  error: string | null;
+};
+
+/**
+ * The forecast at points along `path` for when the driver should reach each,
+ * one Weather API call per point, in parallel. A point whose call fails is
+ * left out; if all fail there are no checkpoints and `error` says why.
+ */
+async function checkRouteWeather(
+  apiKey: string,
+  path: [number, number][],
+  from: Coordinates | null,
+  durationMinutes: number,
+  departAt: Date,
+): Promise<WeatherCheck> {
+  const points = sampleRoute(path, from, durationMinutes, departAt);
+  if (points.length === 0) return { checkpoints: [], alerts: [], error: null };
+
+  // Enough hours to cover the last point, plus the one it falls in.
+  const lastAt = points.at(-1)!.expectedAt.getTime();
+  const hours = Math.ceil((lastAt - Date.now()) / 3_600_000) + 1;
+
+  const results = await Promise.all(points.map((point) => forecastHours(apiKey, point, hours)));
+  const { checkpoints, alerts } = buildRouteWeather(
+    points,
+    results.map((result) => (result.ok ? result.hours : null)),
+  );
+
+  const failures = results.flatMap((result) => (result.ok ? [] : [result.message]));
+  const error =
+    failures.length === 0
+      ? null
+      : failures.length === results.length
+        ? failures[0]
+        : `${failures.length} of ${results.length} points have no forecast: ${failures[0]}`;
+
+  return { checkpoints, alerts, error };
+}
+
+/**
+ * The weather along a previewed route, leaving now — for the planner. Null
+ * when the Weather API is off (GOOGLE_WEATHER_ENABLED) or there is no key.
+ */
+export async function previewWeather(route: RoutePreview): Promise<WeatherPreview | null> {
+  const apiKey = getGoogleRoutesKey();
+  if (!isWeatherEnabled() || !apiKey) return null;
+
+  const { checkpoints, alerts, error } = await checkRouteWeather(
+    apiKey,
+    route.path,
+    null,
+    route.durationMinutes,
+    new Date(),
+  );
+
+  return {
+    checkpoints,
+    alerts: alerts.map((alert) => ({
+      kind: alert.kind,
+      severity: alert.severity,
+      message: alert.message,
+      expectedAt: alert.expectedAt.toISOString(),
+    })),
+    error,
+  };
 }
 
 /** The stored line back as `[longitude, latitude]` pairs, or null if it is not one. */
@@ -401,7 +487,7 @@ export async function findPlannedPath(sessionId: string): Promise<[number, numbe
 }
 
 export type RecordLocationsResult =
-  | { outcome: "recorded"; inserted: number; routeVersion: number }
+  | { outcome: "recorded"; inserted: number; routeVersion: number; weatherVersion: number }
   | { outcome: "not_found" }
   | { outcome: "not_started" };
 
@@ -414,7 +500,8 @@ export type RecordLocationsResult =
  * A PLANNED one does not — no phone is driving it.
  *
  * Answers with the current route version, so a phone that is behind (another
- * device rerouted, or a reroute response was lost) knows to fetch the route.
+ * device rerouted, or a reroute response was lost) knows to fetch the route —
+ * and the weather version, so it knows when there are new weather alerts.
  */
 export async function recordLocations(
   sessionId: string,
@@ -422,7 +509,7 @@ export async function recordLocations(
 ): Promise<RecordLocationsResult> {
   const session = await prisma.trackingSession.findUnique({
     where: { id: sessionId },
-    select: { status: true, routeVersion: true },
+    select: { status: true, routeVersion: true, weatherVersion: true },
   });
   if (!session) return { outcome: "not_found" };
   if (session.status === "PLANNED") return { outcome: "not_started" };
@@ -432,7 +519,12 @@ export async function recordLocations(
     skipDuplicates: true,
   });
 
-  return { outcome: "recorded", inserted: count, routeVersion: session.routeVersion };
+  return {
+    outcome: "recorded",
+    inserted: count,
+    routeVersion: session.routeVersion,
+    weatherVersion: session.weatherVersion,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -467,14 +559,23 @@ type RouteRow = {
   reroutedAt: Date | null;
 };
 
-/** The route to follow now: the latest reroute, or the planned route before any. */
-function toRouteView(row: RouteRow): RouteView | null {
+/** The line and figures of the route to follow now: the latest reroute, or the planned route before any. */
+function followedRoute(row: RouteRow) {
   const rerouted = row.routeVersion > 1;
   const path = toPath(rerouted ? row.currentRoute : row.plannedRoute);
   const distanceMeters = rerouted ? row.currentRouteDistanceMeters : row.plannedDistanceMeters;
   const durationMinutes = rerouted ? row.currentRouteDurationMinutes : row.plannedDurationMinutes;
 
   if (!path || distanceMeters === null || durationMinutes === null) return null;
+  return { rerouted, path, distanceMeters, durationMinutes };
+}
+
+/** The route to follow now, as the phone draws it. */
+function toRouteView(row: RouteRow): RouteView | null {
+  const route = followedRoute(row);
+  if (!route) return null;
+
+  const { rerouted, path, distanceMeters, durationMinutes } = route;
 
   return {
     version: row.routeVersion,
@@ -624,6 +725,206 @@ export async function refreshDrivenRoute(sessionId: string, options: { force?: b
   });
 }
 
+// ---------------------------------------------------------------------------
+// Weather ahead — Google's hourly forecast along the road still to drive.
+// Warns only: weather never changes the route.
+// ---------------------------------------------------------------------------
+
+/** Check the road ahead again this often while the session is ACTIVE. */
+const WEATHER_REFRESH_MS = 30 * 60_000;
+
+/** The stored check back, or null if there is none (or it is not one). */
+function toRouteWeather(value: unknown): RouteWeather | null {
+  if (!value || typeof value !== "object") return null;
+  const weather = value as RouteWeather;
+  return Array.isArray(weather.checkpoints) && typeof weather.checkedAt === "string" ? weather : null;
+}
+
+/**
+ * Checks the weather along the route ahead of the driver — from their latest
+ * position on the route they are following now — and raises an alert for each
+ * new hazard.
+ *
+ * Called at Start and after a reroute with `force`, and after location uploads,
+ * where it runs only when the last check is WEATHER_REFRESH_MS old or was for
+ * an older route. Two uploads racing check once: the check is claimed with a
+ * conditional write first. Does nothing unless GOOGLE_WEATHER_ENABLED is
+ * "true". Failures are kept in `weatherError`, and the last good check stays.
+ *
+ * New alerts move `weatherVersion` up; the phone sees that in its next
+ * locations response and fetches them with `getWeather`.
+ */
+export async function refreshWeather(sessionId: string, options: { force?: boolean } = {}): Promise<void> {
+  if (!isWeatherEnabled()) return;
+
+  const apiKey = getGoogleRoutesKey();
+  if (!apiKey) return;
+
+  const session = await prisma.trackingSession.findUnique({
+    where: { id: sessionId },
+    select: { ...ROUTE_SELECT, status: true, weatherRouteVersion: true, weatherCheckedAt: true },
+  });
+  if (!session || session.status !== "ACTIVE") return;
+
+  const due =
+    options.force ||
+    session.weatherRouteVersion !== session.routeVersion ||
+    !session.weatherCheckedAt ||
+    Date.now() - session.weatherCheckedAt.getTime() >= WEATHER_REFRESH_MS;
+  if (!due) return;
+
+  const { count } = await prisma.trackingSession.updateMany({
+    where: { id: sessionId, status: "ACTIVE", weatherCheckedAt: session.weatherCheckedAt },
+    data: { weatherCheckedAt: new Date() },
+  });
+  if (count === 0) return;
+
+  const route = followedRoute(session);
+  if (!route) return;
+
+  const latest = await prisma.trackingLocation.findFirst({
+    where: { sessionId },
+    orderBy: [{ capturedAt: "desc" }, { id: "desc" }],
+    select: { latitude: true, longitude: true },
+  });
+  const from = latest ? { latitude: toNumber(latest.latitude), longitude: toNumber(latest.longitude) } : null;
+
+  const { checkpoints, alerts, error } = await checkRouteWeather(
+    apiKey,
+    route.path,
+    from,
+    route.durationMinutes,
+    new Date(),
+  );
+
+  const checkedAt = new Date();
+  const routeWeather: RouteWeather = {
+    checkedAt: checkedAt.toISOString(),
+    routeVersion: session.routeVersion,
+    checkpoints,
+  };
+
+  await prisma.$transaction(async (tx) => {
+    // A hazard already raised on this route — the same storm, seen again from
+    // further along — is not raised again. The unique key is the backstop.
+    const earlier = await tx.trackingWeatherAlert.findMany({
+      where: { sessionId, routeVersion: session.routeVersion },
+      select: { kind: true, severity: true, latitude: true, longitude: true, expectedAt: true },
+    });
+    const raisedBefore = earlier.map((alert) => ({
+      ...alert,
+      latitude: toNumber(alert.latitude),
+      longitude: toNumber(alert.longitude),
+    }));
+    const fresh = alerts.filter((alert) => !isRepeat(alert, raisedBefore));
+
+    const { count: raised } = await tx.trackingWeatherAlert.createMany({
+      data: fresh.map((alert) => ({
+        sessionId,
+        routeVersion: session.routeVersion,
+        kind: alert.kind,
+        severity: alert.severity,
+        message: alert.message,
+        condition: alert.condition,
+        latitude: alert.latitude,
+        longitude: alert.longitude,
+        distanceAheadMeters: alert.distanceAheadMeters,
+        expectedAt: alert.expectedAt,
+        expectedHour: alert.expectedHour,
+      })),
+      skipDuplicates: true,
+    });
+
+    // The phone fetches again when this goes up: for new alerts, and for a new
+    // route's first check, whose alert list replaces the old route's.
+    const newRoute = checkpoints.length > 0 && session.weatherRouteVersion !== session.routeVersion;
+
+    await tx.trackingSession.update({
+      where: { id: sessionId },
+      data: {
+        weatherCheckedAt: checkedAt,
+        weatherError: error,
+        // Keep the last good check when every point failed.
+        ...(checkpoints.length > 0
+          ? { routeWeather, weatherRouteVersion: session.routeVersion }
+          : {}),
+        ...(raised > 0 || newRoute ? { weatherVersion: { increment: 1 } } : {}),
+      },
+    });
+  });
+}
+
+/** Alerts this long past their expected time are no longer sent to the phone. */
+const ALERT_STALE_AFTER_MS = 60 * 60_000;
+
+/**
+ * The weather ahead for the phone: the last check's points and the alerts on
+ * the route to follow now that are not long past. The phone calls it when a
+ * locations response's `weatherVersion` is higher than the one it has, and
+ * notifies the driver of each alert id it has not shown before.
+ */
+export async function getWeather(
+  sessionId: string,
+): Promise<{ outcome: "found"; weather: WeatherView } | { outcome: "not_found" }> {
+  const session = await prisma.trackingSession.findUnique({
+    where: { id: sessionId },
+    select: { routeVersion: true, weatherVersion: true, weatherCheckedAt: true, routeWeather: true },
+  });
+  if (!session) return { outcome: "not_found" };
+
+  const rows = await prisma.trackingWeatherAlert.findMany({
+    where: {
+      sessionId,
+      routeVersion: session.routeVersion,
+      expectedAt: { gte: new Date(Date.now() - ALERT_STALE_AFTER_MS) },
+    },
+    orderBy: [{ expectedAt: "asc" }, { id: "asc" }],
+  });
+
+  // Points from an earlier route's check are not the road ahead any more.
+  const routeWeather = toRouteWeather(session.routeWeather);
+  const checkpoints = routeWeather?.routeVersion === session.routeVersion ? routeWeather.checkpoints : [];
+
+  return {
+    outcome: "found",
+    weather: {
+      version: session.weatherVersion,
+      routeVersion: session.routeVersion,
+      checkedAt: session.weatherCheckedAt?.toISOString() ?? null,
+      checkpoints,
+      alerts: rows.map(toWeatherAlertView),
+    },
+  };
+}
+
+function toWeatherAlertView(row: {
+  id: string;
+  routeVersion: number;
+  kind: WeatherAlertView["kind"];
+  severity: WeatherAlertView["severity"];
+  message: string;
+  condition: string;
+  latitude: DecimalLike;
+  longitude: DecimalLike;
+  distanceAheadMeters: number;
+  expectedAt: Date;
+  createdAt: Date;
+}): WeatherAlertView {
+  return {
+    id: row.id,
+    routeVersion: row.routeVersion,
+    kind: row.kind,
+    severity: row.severity,
+    message: row.message,
+    condition: row.condition,
+    latitude: toNumber(row.latitude),
+    longitude: toNumber(row.longitude),
+    distanceAheadMeters: row.distanceAheadMeters,
+    expectedAt: row.expectedAt.toISOString(),
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
 export type StopResult =
   | { outcome: "stopped"; session: SessionView }
   | { outcome: "not_found" }
@@ -714,7 +1015,7 @@ export async function getFeed(sessionId: string, after: Date | null): Promise<Se
 
   const where = { sessionId, ...(after ? { receivedAt: { gte: after } } : {}) };
 
-  const [locationRows, eventRows, lines] = await Promise.all([
+  const [locationRows, eventRows, alertRows, lines] = await Promise.all([
     prisma.trackingLocation.findMany({
       where,
       orderBy: [{ capturedAt: "asc" }, { id: "asc" }],
@@ -742,6 +1043,10 @@ export async function getFeed(sessionId: string, after: Date | null): Promise<Se
         receivedAt: true,
       },
     }),
+    prisma.trackingWeatherAlert.findMany({
+      where: { sessionId, ...(after ? { createdAt: { gte: after } } : {}) },
+      orderBy: [{ expectedAt: "asc" }, { id: "asc" }],
+    }),
     prisma.trackingSession.findUnique({
       where: { id: sessionId },
       select: {
@@ -750,6 +1055,8 @@ export async function getFeed(sessionId: string, after: Date | null): Promise<Se
         reroutedAt: true,
         drivenRoute: true,
         drivenRouteUpdatedAt: true,
+        routeWeather: true,
+        weatherCheckedAt: true,
       },
     }),
   ]);
@@ -777,10 +1084,13 @@ export async function getFeed(sessionId: string, after: Date | null): Promise<Se
     receivedAt: row.receivedAt.toISOString(),
   }));
 
-  const latestReceived = [...locationRows, ...eventRows].reduce<Date | null>(
-    (latest, row) => (!latest || row.receivedAt > latest ? row.receivedAt : latest),
-    null,
-  );
+  const weatherAlerts = alertRows.map(toWeatherAlertView);
+
+  const latestReceived = [
+    ...locationRows.map((row) => row.receivedAt),
+    ...eventRows.map((row) => row.receivedAt),
+    ...alertRows.map((row) => row.createdAt),
+  ].reduce<Date | null>((latest, at) => (!latest || at > latest ? at : latest), null);
 
   return {
     session,
@@ -789,6 +1099,8 @@ export async function getFeed(sessionId: string, after: Date | null): Promise<Se
     drivenPath: changedSince(lines?.drivenRouteUpdatedAt) ? toPath(lines?.drivenRoute) : null,
     locations,
     events,
+    routeWeather: changedSince(lines?.weatherCheckedAt) ? toRouteWeather(lines?.routeWeather) : null,
+    weatherAlerts,
     cursor: (latestReceived ?? after)?.toISOString() ?? null,
   };
 }

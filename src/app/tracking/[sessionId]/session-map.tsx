@@ -11,6 +11,7 @@ import {
   type MapMarker,
 } from "@/components/tracking/session-map-view";
 import { TrackingStatusBadge, TripStatusBadge } from "@/components/tracking/tracking-status-badge";
+import { HazardBadge, WeatherStrip } from "@/components/tracking/weather";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -32,9 +33,10 @@ import {
   isMilestone,
   mergeEvents,
   mergeLocations,
+  mergeWeatherAlerts,
   wasReplayed,
 } from "@/lib/tracking/display";
-import type { EventView, LocationView, SessionFeed } from "@/lib/tracking/types";
+import type { EventView, LocationView, SessionFeed, WeatherAlertView } from "@/lib/tracking/types";
 
 /**
  * The /tracking session map — a copy of the Radar POC's trip map
@@ -58,6 +60,8 @@ const DESTINATION_COLOR = "#dc2626";
 const PLANNED_COLOR = "#64748b";
 const REROUTE_COLOR = "#2563eb";
 const DRIVEN_COLOR = "#7c3aed";
+const WEATHER_WARNING_COLOR = "#d97706";
+const WEATHER_SEVERE_COLOR = "#b91c1c";
 
 /** Pin colour per milestone, so the map reads without opening the table. */
 function eventColor(event: EventView): string {
@@ -83,6 +87,8 @@ export function SessionMap({ initial }: { initial: SessionFeed }) {
   // The latest reroute and the snapped driven line: replaced when a poll brings new ones.
   const [currentPath, setCurrentPath] = useState(initial.currentPath);
   const [drivenPath, setDrivenPath] = useState(initial.drivenPath);
+  const [routeWeather, setRouteWeather] = useState(initial.routeWeather);
+  const [weatherAlerts, setWeatherAlerts] = useState(initial.weatherAlerts);
   const [lastPolledAt, setLastPolledAt] = useState<Date | null>(null);
   const [pollFailed, setPollFailed] = useState(false);
   const [follow, setFollow] = useState(true);
@@ -117,6 +123,8 @@ export function SessionMap({ initial }: { initial: SessionFeed }) {
         setEvents((current) => mergeEvents(current, payload.events));
         if (payload.currentPath) setCurrentPath(payload.currentPath);
         if (payload.drivenPath) setDrivenPath(payload.drivenPath);
+        if (payload.routeWeather) setRouteWeather(payload.routeWeather);
+        setWeatherAlerts((current) => mergeWeatherAlerts(current, payload.weatherAlerts));
         setLastPolledAt(new Date());
         setPollFailed(false);
 
@@ -180,6 +188,16 @@ export function SessionMap({ initial }: { initial: SessionFeed }) {
       position: { latitude: event.latitude, longitude: event.longitude },
       color: eventColor(event),
       text: `${eventLabel(event)} · ${formatDateTimeSeconds(new Date(event.actualCreatedAt))}`,
+    });
+  }
+  // Weather hazards on the route being followed; an earlier route's are only in the table.
+  const currentAlerts = weatherAlerts.filter((alert) => alert.routeVersion === trip.routeVersion);
+  for (const alert of currentAlerts) {
+    markers.push({
+      key: `weather-${alert.id}`,
+      position: alert,
+      color: alert.severity === "SEVERE" ? WEATHER_SEVERE_COLOR : WEATHER_WARNING_COLOR,
+      text: alert.message,
     });
   }
   if (last) {
@@ -288,6 +306,31 @@ export function SessionMap({ initial }: { initial: SessionFeed }) {
                   )}
                 </Stat>
                 <Stat label="Route points">{formatNumber(locations.length)}</Stat>
+                <Stat label="Weather ahead">
+                  {currentAlerts.length === 0 ? (
+                    routeWeather ? (
+                      <span className="text-emerald-700 dark:text-emerald-400">No hazards expected</span>
+                    ) : (
+                      <span className="text-muted-foreground">Not checked yet</span>
+                    )
+                  ) : (
+                    <span className="flex flex-wrap gap-1">
+                      {currentAlerts.map((alert) => (
+                        <HazardBadge key={alert.id} hazard={alert} />
+                      ))}
+                    </span>
+                  )}
+                  {trip.weatherCheckedAt && (
+                    <span className="block text-xs text-muted-foreground">
+                      Checked {formatDateTimeSeconds(new Date(trip.weatherCheckedAt))}
+                    </span>
+                  )}
+                  {trip.weatherError && (
+                    <span className="block whitespace-pre-wrap break-words text-xs text-destructive">
+                      {trip.weatherError}
+                    </span>
+                  )}
+                </Stat>
               </>
             )}
 
@@ -344,12 +387,25 @@ export function SessionMap({ initial }: { initial: SessionFeed }) {
             <TabsList>
               <TabsTrigger value="events">Radar events ({formatNumber(events.length)})</TabsTrigger>
               <TabsTrigger value="points">Route points ({formatNumber(locations.length)})</TabsTrigger>
+              <TabsTrigger value="weather">Weather ({formatNumber(weatherAlerts.length)})</TabsTrigger>
             </TabsList>
             <TabsContent value="events" className="mt-2">
               <EventTable events={events} />
             </TabsContent>
             <TabsContent value="points" className="mt-2">
               <PointTable locations={locations} />
+            </TabsContent>
+            <TabsContent value="weather" className="mt-2 space-y-3">
+              {routeWeather && (
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">
+                    Forecast along route v{routeWeather.routeVersion}, from the driver&apos;s position at{" "}
+                    {formatDateTimeSeconds(new Date(routeWeather.checkedAt))}.
+                  </p>
+                  <WeatherStrip checkpoints={routeWeather.checkpoints} />
+                </div>
+              )}
+              <WeatherAlertTable alerts={weatherAlerts} routeVersion={trip.routeVersion} />
             </TabsContent>
           </Tabs>
         </div>
@@ -496,6 +552,58 @@ function PointTable({ locations }: { locations: LocationView[] }) {
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Every weather alert raised for the session, soonest first. Not yet sent to
+ * the driver's phone — this table is where they show for now.
+ */
+function WeatherAlertTable({ alerts, routeVersion }: { alerts: WeatherAlertView[]; routeVersion: number }) {
+  if (alerts.length === 0) {
+    return (
+      <p className="rounded-xl border p-6 text-sm text-muted-foreground">
+        No weather alerts. The road ahead is checked at Start, after a reroute and every 30 minutes
+        while the session is active (when GOOGLE_WEATHER_ENABLED is on).
+      </p>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Hazard</TableHead>
+            <TableHead>Message</TableHead>
+            <TableHead>Expected</TableHead>
+            <TableHead>Raised</TableHead>
+            <TableHead className="text-right">Route</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {alerts.map((alert) => (
+            <TableRow key={alert.id} className={alert.routeVersion === routeVersion ? undefined : "opacity-60"}>
+              <TableCell>
+                <HazardBadge hazard={alert} />
+              </TableCell>
+              <TableCell className="whitespace-normal">
+                {alert.message}
+                <span className="block text-xs text-muted-foreground">{alert.condition}</span>
+              </TableCell>
+              <TableCell>{formatDateTimeSeconds(new Date(alert.expectedAt))}</TableCell>
+              <TableCell>{formatDateTimeSeconds(new Date(alert.createdAt))}</TableCell>
+              <TableCell className="text-right tabular-nums">
+                v{alert.routeVersion}
+                {alert.routeVersion !== routeVersion && (
+                  <span className="block text-xs text-muted-foreground">earlier route</span>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   );
 }
 

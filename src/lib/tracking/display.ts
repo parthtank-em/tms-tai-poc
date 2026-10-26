@@ -4,6 +4,7 @@ import type {
   LocationView,
   SessionView,
   TripEnd,
+  WeatherAlertView,
 } from "./types";
 
 /**
@@ -25,6 +26,13 @@ export function mergeLocations(
 
 export function mergeEvents(current: EventView[], incoming: EventView[]): EventView[] {
   return mergeSorted(current, incoming, (item) => item.actualCreatedAt);
+}
+
+export function mergeWeatherAlerts(
+  current: WeatherAlertView[],
+  incoming: WeatherAlertView[],
+): WeatherAlertView[] {
+  return mergeSorted(current, incoming, (item) => item.expectedAt);
 }
 
 function mergeSorted<T extends { id: string }>(current: T[], incoming: T[], at: (item: T) => string): T[] {

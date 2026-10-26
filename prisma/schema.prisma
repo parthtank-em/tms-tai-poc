@@ -812,6 +812,20 @@ model TrackingSession {
   drivenRouteUpdatedAt     DateTime? @map("driven_route_updated_at")
   drivenRouteError         String?   @map("driven_route_error")
 
+  /// The weather ahead along the route (Google Weather API), checked at Start,
+  /// after each reroute and every so often while ACTIVE. `routeWeather` is the
+  /// last check's points (a RouteWeather); `weatherRouteVersion` the route it
+  /// was for, so a reroute triggers a new check.
+  ///
+  /// `weatherVersion` goes up when a check raises new alerts, or is the first
+  /// for a new route. The phone compares it with the version it has, as it does
+  /// `routeVersion`, and fetches the weather again when it is behind.
+  weatherVersion      Int       @default(0) @map("weather_version")
+  routeWeather        Json?     @map("route_weather")
+  weatherRouteVersion Int?      @map("weather_route_version")
+  weatherCheckedAt    DateTime? @map("weather_checked_at")
+  weatherError        String?   @map("weather_error")
+
   /// Radar's own id for the trip created at Start, from the create response.
   radarTripId       String?          @map("radar_trip_id")
   tripStatus        RadarTripStatus? @map("trip_status")
@@ -831,8 +845,9 @@ model TrackingSession {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  locations TrackingLocation[]
-  events    TrackingEvent[]
+  locations     TrackingLocation[]
+  events        TrackingEvent[]
+  weatherAlerts TrackingWeatherAlert[]
 
   @@index([deviceId, startedAt])
   @@index([status])
@@ -898,6 +913,59 @@ model TrackingEvent {
 enum GeofenceTarget {
   START
   DESTINATION
+}
+
+/// A weather hazard ahead on a session's route, worth telling the driver: one
+/// per stretch of road with that hazard, placed where it starts.
+///
+/// The weather is checked again every so often; a hazard already raised on the
+/// route nearby around the same time is not raised again unless it got worse
+/// (`isRepeat`). The unique key is the backstop, with severity in it so a
+/// WARNING turning SEVERE in the same hour is still stored. A reroute is a new
+/// version, so its hazards are raised afresh.
+///
+/// The phone learns of new ones from `weatherVersion` in the location upload's
+/// response and fetches them from `GET /weather`; the dashboard shows them too.
+model TrackingWeatherAlert {
+  id           String            @id @default(uuid())
+  sessionId    String            @map("session_id")
+  session      TrackingSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  routeVersion Int               @map("route_version")
+  kind         WeatherHazardKind
+  severity     WeatherSeverity
+  /// Ready to show, e.g. "Heavy rain (9 mm/h) expected 42 km ahead around 14:00".
+  message      String
+  /// Google's description of that hour, e.g. "Heavy rain".
+  condition    String
+
+  latitude            Decimal  @db.Decimal(10, 7)
+  longitude           Decimal  @db.Decimal(10, 7)
+  /// Along the route from where the driver was when it was checked.
+  distanceAheadMeters Int      @map("distance_ahead_meters")
+  /// When the driver should get there, and the start of Google's forecast hour
+  /// it falls in (local hours: in India they start at :30 UTC).
+  expectedAt          DateTime @map("expected_at")
+  expectedHour        DateTime @map("expected_hour")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([sessionId, routeVersion, kind, severity, expectedHour])
+  @@index([sessionId, createdAt])
+  @@map("tracking_weather_alerts")
+}
+
+enum WeatherHazardKind {
+  THUNDERSTORM
+  HEAVY_RAIN
+  SNOW_ICE
+  STRONG_WIND
+  LOW_VISIBILITY
+  EXTREME_HEAT
+}
+
+enum WeatherSeverity {
+  WARNING
+  SEVERE
 }
 
 // ---------------------------------------------------------------------------

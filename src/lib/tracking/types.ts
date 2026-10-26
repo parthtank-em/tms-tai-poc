@@ -88,7 +88,78 @@ export type SessionView = {
   rerouted: PlannedRoute | null;
   /** The last Roads API failure snapping the driven line, or null. */
   drivenRouteError: string | null;
+  /** Goes up when there are new weather alerts (or a new route's first check): 0 = none yet. */
+  weatherVersion: number;
+  /** When the weather ahead was last checked, or null if never. */
+  weatherCheckedAt: string | null;
+  /** The last Weather API failure, or null. */
+  weatherError: string | null;
 };
+
+/** What can make the road ahead hazardous, as judged from Google's hourly forecast. */
+export type WeatherHazardKind =
+  | "THUNDERSTORM"
+  | "HEAVY_RAIN"
+  | "SNOW_ICE"
+  | "STRONG_WIND"
+  | "LOW_VISIBILITY"
+  | "EXTREME_HEAT";
+
+export type WeatherSeverity = "WARNING" | "SEVERE";
+
+export type WeatherHazard = {
+  kind: WeatherHazardKind;
+  severity: WeatherSeverity;
+};
+
+/** The forecast at one point on the route, for the hour the driver should reach it. */
+export type WeatherCheckpoint = Coordinates & {
+  /** Along the route from where the check started (the driver, or the source). */
+  distanceAheadMeters: number;
+  /** When the driver should be here, from the route's duration. */
+  expectedAt: string;
+  /** Google's description, e.g. "Light rain". */
+  condition: string;
+  /** Google's icon, without extension: append `.svg` or `.png`. */
+  iconBaseUri: string | null;
+  temperatureC: number | null;
+  /** Chance of precipitation that hour, in percent. */
+  precipitationPercent: number | null;
+  hazards: WeatherHazard[];
+};
+
+/** The weather ahead along one route, as last checked. */
+export type RouteWeather = {
+  checkedAt: string;
+  /** The route version it was checked for. */
+  routeVersion: number;
+  checkpoints: WeatherCheckpoint[];
+};
+
+/** The weather along a previewed route, leaving now. Nothing is stored. */
+export type WeatherPreview = {
+  checkpoints: WeatherCheckpoint[];
+  alerts: (WeatherHazard & { message: string; expectedAt: string })[];
+  /** Why some or all points have no forecast, or null. */
+  error: string | null;
+};
+
+/**
+ * One hazard ahead, worth telling the driver about: a stretch of road with it,
+ * placed where it starts. Raised once, however often the weather is checked —
+ * again only if it gets worse, or on a new route.
+ */
+export type WeatherAlertView = WeatherHazard &
+  Coordinates & {
+    id: string;
+    routeVersion: number;
+    /** Ready to show, e.g. "Heavy rain (9 mm/h) expected 42 km ahead around 14:00". */
+    message: string;
+    condition: string;
+    distanceAheadMeters: number;
+    expectedAt: string;
+    createdAt: string;
+  };
 
 /** The route the driver should follow now, as the phone draws it. */
 export type RouteView = {
@@ -125,6 +196,23 @@ export type EventView = {
   receivedAt: string;
 };
 
+/** The weather ahead, as the phone fetches it (`GET /weather`). */
+export type WeatherView = {
+  /** Keep it: fetch again when a locations response's `weatherVersion` is higher. */
+  version: number;
+  /** The route the alerts are for — always the route to follow now. */
+  routeVersion: number;
+  /** When the road ahead was last checked, or null if never. */
+  checkedAt: string | null;
+  /** The forecast at points ahead, nearest first; empty before the first check. */
+  checkpoints: WeatherCheckpoint[];
+  /**
+   * The current route's alerts that are not long past, soonest first. Notify
+   * the driver of each `id` you have not shown before.
+   */
+  alerts: WeatherAlertView[];
+};
+
 /** One poll of the session page. */
 export type SessionFeed = {
   /** Fresh on every poll — status and ETA change without a new location. */
@@ -149,8 +237,16 @@ export type SessionFeed = {
   /** Ordered by `actualCreatedAt` ascending. */
   events: EventView[];
   /**
+   * The latest weather check along the route. Sent on the first load and
+   * whenever it was checked again since `after`; otherwise null (keep the one
+   * you have).
+   */
+  routeWeather: RouteWeather | null;
+  /** Weather alerts raised since `after`, ordered by `expectedAt` ascending. */
+  weatherAlerts: WeatherAlertView[];
+  /**
    * Pass back as `?after=` on the next poll. Tracks arrival (`receivedAt`)
-   * across both lists, so a late offline batch or a replayed event is still
+   * across the lists, so a late offline batch or a replayed event is still
    * picked up even though it carries an old timestamp.
    */
   cursor: string | null;

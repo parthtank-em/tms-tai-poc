@@ -14,6 +14,7 @@ import Link from "next/link";
 import type RadarType from "radar-sdk-js";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { HazardBadge } from "@/components/tracking/weather";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -29,7 +30,13 @@ import { formatDateTimeSeconds } from "@/lib/format";
 import { endLabel, eventLabel, formatDistance, formatMinutes } from "@/lib/tracking/display";
 import { decodePolyline } from "@/lib/tracking/polyline";
 import { distanceToPathMeters } from "@/lib/tracking/route-geometry";
-import type { GeofenceTarget, RouteView, SessionView } from "@/lib/tracking/types";
+import type {
+  GeofenceTarget,
+  RouteView,
+  SessionView,
+  WeatherAlertView,
+  WeatherView,
+} from "@/lib/tracking/types";
 
 /**
  * A browser stand-in for the mobile app, driving **real Radar** — a copy of the
@@ -43,6 +50,10 @@ import type { GeofenceTarget, RouteView, SessionView } from "@/lib/tracking/type
  * it, so Radar evaluates the fences and the trip and fires real webhooks. The
  * same position is forwarded to our locations endpoint for the route line,
  * which is what the app does from its location listener.
+ *
+ * Weather alerts reach it the way they reach the app: a locations response's
+ * `weatherVersion` is higher than the one it has, so it fetches `/weather` and
+ * "notifies" (logs) each alert it has not shown before.
  *
  * Unlike the phone SDK, the web SDK cannot replay offline locations. "Offline"
  * here queues route points for a bulk upload, but Radar never sees the
@@ -165,6 +176,8 @@ export function Simulator() {
   const [offRoute, setOffRoute] = useState(false);
   const [route, setRoute] = useState<HeldRoute | null>(null);
   const [offBy, setOffBy] = useState<number | null>(null);
+  // Weather, as the app holds it: the alerts on the route ahead.
+  const [weatherAlerts, setWeatherAlerts] = useState<WeatherAlertView[]>([]);
 
   // The tick runs from a timer, so it reads the latest values through refs.
   const radar = useRef<typeof RadarType | null>(null);
@@ -175,6 +188,9 @@ export function Simulator() {
   const offRouteRef = useRef(offRoute);
   const routeRef = useRef<HeldRoute | null>(null);
   const offFixes = useRef(0);
+  const weatherVersion = useRef(0);
+  /** Alert ids already "notified", so each is shown once. */
+  const notified = useRef(new Set<string>());
 
   useEffect(() => {
     onlineRef.current = online;
@@ -200,6 +216,33 @@ export function Simulator() {
       if (json.route) addLog(`Drawing route v${json.route.version} (${json.route.source.toLowerCase()})`);
     },
     [addLog, holdRoute],
+  );
+
+  /**
+   * Fetches the weather ahead when a response's `weatherVersion` is ahead of
+   * ours, and notifies each alert not shown before — as the app does.
+   */
+  const syncWeather = useCallback(
+    async (sessionId: string, version: unknown) => {
+      if (!(Number(version) > weatherVersion.current)) return;
+
+      const response = await fetch(`/api/tracking/sessions/${sessionId}/weather`, { cache: "no-store" });
+      if (!response.ok) {
+        addLog(`Weather fetch failed: HTTP ${response.status}`, "error");
+        return;
+      }
+
+      const { weather } = (await response.json()) as { weather: WeatherView };
+      weatherVersion.current = weather.version;
+      setWeatherAlerts(weather.alerts);
+
+      for (const alert of weather.alerts) {
+        if (notified.current.has(alert.id)) continue;
+        notified.current.add(alert.id);
+        addLog(`Notification — ${alert.severity === "SEVERE" ? "Severe: " : ""}${alert.message}`, "ok");
+      }
+    },
+    [addLog],
   );
 
   /** The trips a phone could start, as the app's trip list shows them. */
@@ -296,6 +339,9 @@ export function Simulator() {
       // Behind on the route (someone else rerouted)? Fetch the current one.
       const version = Number(result.json.routeVersion);
       if (routeRef.current && version > routeRef.current.version) await loadRoute(trip);
+
+      // New weather alerts? Fetch them and notify.
+      await syncWeather(trip, result.json.weatherVersion);
     } catch (error) {
       setQueue((current) => [...current, location]);
       addLog(`Route point send failed (${(error as Error).message}) — queued`, "error");
@@ -330,7 +376,7 @@ export function Simulator() {
         : `No new route yet (cool-down or already rerouted) — following v${rerouted?.version}`,
       "ok",
     );
-  }, [addLog, trackWithRadar, loadRoute, holdRoute]);
+  }, [addLog, trackWithRadar, loadRoute, holdRoute, syncWeather]);
 
   useEffect(() => {
     if (!running) return;
@@ -357,6 +403,7 @@ export function Simulator() {
       `Uploaded ${batch.length} queued point(s): inserted ${String(result.json.inserted)}, skipped ${String(result.json.skipped)}`,
       "ok",
     );
+    await syncWeather(tripId, result.json.weatherVersion);
     return true;
   }
 
@@ -395,6 +442,9 @@ export function Simulator() {
       offRouteRef.current = false;
       offFixes.current = 0;
       setOffBy(null);
+      weatherVersion.current = 0;
+      notified.current = new Set();
+      setWeatherAlerts([]);
       addLog(`Started trip ${newTripId} — Radar trip status ${String(result.json.tripStatus)}`, "ok");
 
       // The app draws the route to follow right after Start.
@@ -644,6 +694,23 @@ export function Simulator() {
                 "—"
               )}
             </Stat>
+            <div className="col-span-2">
+              <dt className="text-muted-foreground">Weather alerts ahead</dt>
+              <dd className="mt-0.5">
+                {weatherAlerts.length === 0 ? (
+                  "—"
+                ) : (
+                  <ul className="space-y-1.5">
+                    {weatherAlerts.map((alert) => (
+                      <li key={alert.id} className="space-y-0.5">
+                        <HazardBadge hazard={alert} />
+                        <span className="block text-xs">{alert.message}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </dd>
+            </div>
           </dl>
           <p className="mt-4 border-t pt-4 text-xs text-muted-foreground">
             Status and ETA here come straight from Radar&apos;s track response. The trip page shows

@@ -1,5 +1,7 @@
+import { after } from "next/server";
+
 import { badRequest, readJson, sessionNotFound } from "@/lib/tracking/http";
-import { rerouteSession } from "@/lib/tracking/service";
+import { refreshWeather, rerouteSession } from "@/lib/tracking/service";
 import { parseReroute } from "@/lib/tracking/validation";
 
 /**
@@ -11,6 +13,8 @@ import { parseReroute } from "@/lib/tracking/validation";
  * `rerouted: false` means no new route was made — the phone was behind, or
  * the last reroute was under a minute ago — and `route` is the current one.
  * Either way, draw the `route` in the response.
+ *
+ * After a new route is answered, the weather along it is checked.
  *
  * Unauthenticated, like the other device endpoints.
  */
@@ -43,6 +47,7 @@ export async function POST(
     case "google_failed":
       return Response.json({ success: false, error: result.message }, { status: 502 });
     case "rerouted":
+      after(() => refreshWeather(sessionId, { force: true }));
       return Response.json({ success: true, rerouted: true, route: result.route });
     case "current":
       return Response.json({ success: true, rerouted: false, route: result.route });

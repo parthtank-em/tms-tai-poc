@@ -19,10 +19,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { HazardBadge, WeatherStrip } from "@/components/tracking/weather";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDateTime } from "@/lib/format";
 import { formatDistance, formatMinutes } from "@/lib/tracking/display";
-import type { RoutePreview, TripEnd } from "@/lib/tracking/types";
+import type { RoutePreview, TripEnd, WeatherPreview } from "@/lib/tracking/types";
+import { HAZARD_LABELS } from "@/lib/tracking/weather";
 import {
   MAX_GEOFENCE_RADIUS_METERS,
   MIN_GEOFENCE_RADIUS_METERS,
@@ -58,6 +60,7 @@ const DEFAULT_RADIUS_METERS = 300;
 const SOURCE_COLOR = "#16a34a";
 const DESTINATION_COLOR = "#dc2626";
 const ROUTE_COLOR = "#2563eb";
+const HAZARD_COLOR = "#d97706";
 
 /** Wait this long after the last keystroke before asking Google. */
 const SEARCH_DEBOUNCE_MS = 250;
@@ -155,10 +158,14 @@ function toInput(
   return { ok: true, input: { start: start.end, destination: end.end } };
 }
 
-/** `at` is when Preview was pressed; null for the saved route an edit opens on. */
+/**
+ * `at` is when Preview was pressed; null for the saved route an edit opens on.
+ * `weather` is null for that saved route too, and when the Weather API is off.
+ */
 type Preview = {
   input: PlanSessionInput;
   route: RoutePreview;
+  weather: WeatherPreview | null;
   at: number | null;
 };
 
@@ -183,6 +190,7 @@ export function SessionPlanner({ trip }: { trip?: PlannerSession }) {
       ? {
           input: { start: trip.start, destination: trip.destination },
           route: trip.route,
+          weather: null,
           at: null,
         }
       : null,
@@ -212,7 +220,7 @@ export function SessionPlanner({ trip }: { trip?: PlannerSession }) {
           setError(result.error);
           return;
         }
-        setPreview({ input, route: result.route, at: Date.now() });
+        setPreview({ input, route: result.route, weather: result.weather, at: Date.now() });
         setPreviewCount((count) => count + 1);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Preview failed.");
@@ -270,6 +278,15 @@ export function SessionPlanner({ trip }: { trip?: PlannerSession }) {
           color: DESTINATION_COLOR,
           text: "Destination",
         },
+        // Where the forecast has a hazard for when the driver gets there.
+        ...(preview.weather?.checkpoints ?? [])
+          .filter((checkpoint) => checkpoint.hazards.length > 0)
+          .map((checkpoint) => ({
+            key: `weather-${checkpoint.latitude},${checkpoint.longitude}`,
+            position: checkpoint,
+            color: HAZARD_COLOR,
+            text: `${checkpoint.hazards.map((hazard) => HAZARD_LABELS[hazard.kind]).join(", ")} · ${checkpoint.condition}`,
+          })),
       ] satisfies MapMarker[],
       lines: [{ key: "route", path: preview.route.path, color: ROUTE_COLOR }] satisfies MapLine[],
     };
@@ -320,6 +337,7 @@ export function SessionPlanner({ trip }: { trip?: PlannerSession }) {
           </div>
 
           <RouteCard preview={preview} stale={stale} />
+          {preview?.weather && <WeatherCard weather={preview.weather} />}
         </div>
 
         <div className="h-[28rem] overflow-hidden rounded-xl border bg-muted lg:sticky lg:top-6 lg:h-[calc(100svh-8rem)] lg:min-h-[32rem]">
@@ -379,6 +397,39 @@ function RouteCard({ preview, stale }: { preview: Preview | null; stale: boolean
           )}
         </CardContent>
       )}
+    </Card>
+  );
+}
+
+/** The forecast along the previewed route, leaving now, and any hazards in it. */
+function WeatherCard({ weather }: { weather: WeatherPreview }) {
+  return (
+    <Card size="sm">
+      <CardHeader>
+        <CardTitle>Weather along the route</CardTitle>
+        <CardDescription>
+          Google&apos;s hourly forecast at points along the route, for when the driver would reach
+          each one leaving now. It does not change the route.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {weather.alerts.length === 0 ? (
+          weather.checkpoints.length > 0 && (
+            <p className="text-sm text-emerald-700 dark:text-emerald-400">No weather hazards expected.</p>
+          )
+        ) : (
+          <ul className="space-y-2 text-sm">
+            {weather.alerts.map((alert) => (
+              <li key={`${alert.kind}-${alert.expectedAt}`} className="space-y-1">
+                <HazardBadge hazard={alert} />
+                <p>{alert.message}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+        <WeatherStrip checkpoints={weather.checkpoints} />
+        {weather.error && <p className="text-xs text-destructive">{weather.error}</p>}
+      </CardContent>
     </Card>
   );
 }
